@@ -1,2 +1,3 @@
-mod bbloom;
-mod rutil;
+pub mod bbloom;
+pub mod rutil;
+pub mod z;

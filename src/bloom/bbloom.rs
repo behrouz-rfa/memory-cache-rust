@@ -54,17 +54,17 @@ impl Bloom {
         };
     }
 
-    fn add_if_not_has(&mut self, hash: u64) -> bool {
+    pub   fn add_if_not_has(&mut self, hash: u64) -> bool {
         if self.has(hash) {
             return false;
         }
         self.add(hash);
         true
     }
-    fn clear(&mut self) {
+    pub  fn clear(&mut self) {
         self.bitset = vec![0; self.bitset.len()]
     }
-    fn set(&mut self, idx: u64) {
+    pub  fn set(&mut self, idx: u64) {
         // let b = *self.bitset[(idx >> 6) as usize];
 
         // let ptr:*mut [i64] =  self.bitset as *mut [i64];
@@ -116,11 +116,11 @@ impl Bloom {
     }
     pub fn isset(&mut self, idx: u64) -> bool {
         let mut ptr: *mut i64 = self.bitset.as_mut_ptr();
-        if ((idx >> 6) + ((idx % 64) >> 3)) as usize > self.bitset.len() {
-            return false;
-        }
+        // if ((idx >> 6) + ((idx % 64) >> 3)) as usize > self.bitset.len() {
+        //     return false;
+        // }
         unsafe {
-            let step = ((idx >> 6) + ((idx % 64) >> 3));
+            let step = (idx >> 6) /*+ ((idx % 64) >> 3))*/;
             ptr = ptr.wrapping_offset(step as isize);
         }
 
@@ -182,34 +182,34 @@ mod tests {
     const N: usize = 1 << 16;
 
 
-    fn worldlist() -> Vec<[u8; 32]> {
-        let seed = [0u8; 32];
-        let mut rng: StdRng = SeedableRng::from_seed(seed);
-
-        let mut wordlist = vec![[0u8; 32]; N];
-        for i in 0..wordlist.len() {
-            let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
-            let v = rand::thread_rng().gen::<[u8; 32]>();
-
-            wordlist[i] = bytes;
-        }
-        wordlist
-    }
+    // fn worldlist() -> Vec<[u8]> {
+    //     let seed = [0u8];
+    //     let mut rng: StdRng = SeedableRng::from_seed(seed);
+    //
+    //     let mut wordlist = vec![[0u8]; N];
+    //     for i in 0..wordlist.len() {
+    //         let mut bytes = [0u8];
+    //         rng.fill_bytes(&mut bytes);
+    //         let v = rand::thread_rng().gen::<[u8]>();
+    //
+    //         wordlist[i] = bytes;
+    //     }
+    //     wordlist
+    // }
 
     #[test]
     fn test_number_of_wrong() {
         let mut bf = Bloom::new((N * 10) as f64, 7.0);
         let mut cnt = 0;
-        let word_list = worldlist();
-        bf.add_if_not_has(1147594788350054766);
-        // for i in 0..word_list.len() {
-        //     let hash = MemHash(word_list[i]);
-        //
-        //     if !bf.add_if_not_has(hash.into()) {
-        //         cnt += 1;
-        //     }
-        // }
+       /* let word_list = worldlist();
+        // bf.add_if_not_has(1147594788350054766);
+        for i in 0..word_list.len() {
+            let hash = MemHash(&mut word_list);
+
+            if !bf.add_if_not_has(hash.into()) {
+                cnt += 1;
+            }
+        }*/
 
         println!("Bloomfilter New(7* 2**16, 7) \
             (-> size={} bit): \n    \

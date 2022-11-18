@@ -23,12 +23,24 @@ impl Hash for StringStruct {
     }
 }
 
-pub fn MemHash(mut data: [u8; 32]) -> u64 {
+pub fn MemHash(data: &[u8]) -> u64 {
     // let (head, body, _tail) = unsafe { data.align_to::<StringStruct>() };
     // assert!(head.is_empty(), "Data was not aligned");
     // let my_struct = &body[0];
 
-    let hash = seahash::hash(&data);
+    let hash = seahash::hash(data);
+    // let my_struct =   unsafe { data.as_mut_ptr() as *mut StringStruct };
+    // let mut s = DefaultHasher::new();
+    // my_struct.hash(&mut s);
+    // let hash = s.finish();
+    hash
+}
+pub fn MemHashByte(data: &[u8]) -> u64 {
+    // let (head, body, _tail) = unsafe { data.align_to::<StringStruct>() };
+    // assert!(head.is_empty(), "Data was not aligned");
+    // let my_struct = &body[0];
+
+    let hash = seahash::hash(data);
     // let my_struct =   unsafe { data.as_mut_ptr() as *mut StringStruct };
     // let mut s = DefaultHasher::new();
     // my_struct.hash(&mut s);
