@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::{ptr, thread};
 use parking_lot::Mutex;
 use crate::bloom::bbloom::Bloom;
-use crate::cache::{Item, keepGets, keyUpdate, rejectSets};
+use crate::cache::{Item, ITEM_NEW, keepGets, keyUpdate, rejectSets};
 use crate::cmsketch::CmSketch;
 use crate::Metrics;
 
@@ -16,7 +16,7 @@ pub trait Policy {
     // add attempts to add the key-cost pair to the Policy. It returns a slice
     // of evicted keys and a bool denoting whether or not the key-cost pair
     // was added. If it returns true, the key should be stored in cache.
-    fn add(&self, key: u64, cost: i64) -> (Vec<Item>, bool);
+    fn add<T>(&self, key: u64, cost: i64) -> (Vec<Item<T>>, bool);
     // Has returns true if the key exists in the Policy.
     fn has(&self, key: u64) -> bool;
     // Del deletes the key from the Policy.
@@ -76,7 +76,7 @@ impl DefaultPolicy {
         self.metrics = metrics;
         self.evict.metrics = metrics
     }
-    pub fn add(&mut self, key: u64, cost: i64) -> (Vec<Item>, bool) {
+    pub fn add<T>(&mut self, key: u64, cost: i64) -> (Vec<Item<T>>, bool) {
         let l = self.l.lock();
 
         // can't add an item bigger than entire cache
@@ -134,10 +134,10 @@ impl DefaultPolicy {
             self.evict.del(minKey);
             sample[minId as usize] = sample[sample.len() - 1];
             victims.push(Item {
-                flag: vec![],
+                flag: ITEM_NEW,
                 key: minKey,
                 conflict: 0,
-                value: 0,
+                value: None,
                 cost: minCost,
             })
         };

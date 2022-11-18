@@ -1,8 +1,8 @@
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, select, Sender};
 use crate::bloom::z::KeyHash;
 use crate::policy::{DefaultPolicy, Policy};
 use crate::ring::{RingBuffer, RingConsumer};
-use crate::store::Store;
+use crate::store::{ShardedMap, Store};
 
 // The following 2 keep track of hits and misses.
 pub const hit: i32 = 0;
@@ -27,7 +27,7 @@ pub const doNotUse: i32 = 11;
 
 
 /// Config is passed to NewCache for creating new Cache instances.
-pub struct Config {
+pub struct Config<T> {
     // NumCounters determines the number of counters (keys) to keep that hold
     // access frequency information. It's generally a good idea to have more
     // counters than the max cache capacity, as this will improve eviction
@@ -59,30 +59,34 @@ pub struct Config {
     // major factor.
     metrics: bool,
 
-    key_to_hash: KeyHash,
+    key_to_hash: fn(T) -> (u64, u64),
 }
 
 
-impl Config {
+impl<T> Config<T> {
     // OnEvict is called for every eviction and passes the hashed key, value,
     // and cost to the function.
-    pub fn on_evict<T>(key: u64, confilict: u64, value: T, cost: usize) {
+    pub fn on_evict(key: u64, confilict: u64, value: T, cost: usize) {
         todo!()
     }
 
 
-    pub fn cost<T>(value: T) -> i64 {
+    pub fn cost(value: T) -> i64 {
         todo!()
     }
 }
 
-type ItemFlag = Vec<u8>;
+pub type ItemFlag = u8;
 
-pub struct Item {
+pub const ITEM_NEW: ItemFlag = 0;
+pub const ITEM_DELETE: ItemFlag = 1;
+pub const ITEM_UPDATE: ItemFlag = 2;
+#[derive(Debug, Copy, Clone)]
+pub struct Item<T> {
     pub(crate) flag: ItemFlag,
     pub(crate) key: u64,
     pub(crate) conflict: u64,
-    pub(crate) value: u64,
+    pub(crate) value: Option<T>,
     pub(crate) cost: i64,
 }
 
@@ -111,29 +115,33 @@ impl Metrics {
 }
 
 
-pub struct Cache {
+pub struct Cache<T> {
+    stor: ShardedMap<T>,
     policy: DefaultPolicy,
     getBuf: RingBuffer,
-    set_buf: Sender<Item>,
-    receiver_buf: Receiver<Item>,
+    set_buf: Sender<Item<T>>,
+    receiver_buf: Receiver<Item<T>>,
     metrics: Metrics,
+    key_to_hash: fn(T) -> (u64, u64),
 }
 
 
-impl Cache {
-  pub  fn new(c: Config) -> Self {
+impl<T> Cache<T> {
+    pub fn new(c: Config<T>) -> Self {
         let mut p = DefaultPolicy::new(c.numb_counters, c.max_cost);
         let (tx, rx) = crossbeam_channel::unbounded();
-      let mut cache =   Cache {
+        let mut cache = Cache {
+            stor: ShardedMap::new(),
             getBuf: RingBuffer::new(&mut p, c.buffer_items),
             policy: p,
             set_buf: tx,
             receiver_buf: rx,
             metrics: Default::default(),
+            key_to_hash: c.key_to_hash,
         };
 
 
-        if c.metrics  {
+        if c.metrics {
             cache.collect_metrics()
         }
         cache
@@ -145,31 +153,45 @@ impl Cache {
     }
 }
 
-impl<T> Store<T> for Cache {
-    fn Get(&self, key_hash: u64, confilict_hash: u64) -> (T, bool) {
-        todo!()
+impl<T:Clone> Cache<T>
+{
+    fn set(&mut self, key: T, value: T, cost: i64) -> bool {
+        let (key_hash, confilict_hash) = (self.key_to_hash)(key);
+        let mut item = Item {
+            flag: ITEM_NEW,
+            key: key_hash,
+            conflict: confilict_hash,
+            value:Some(value.clone()),
+            cost,
+        };
+        // attempt to immediately update hashmap value and set flag to update so the
+        // cost is eventually updated
+        if (self.stor.update(key_hash, confilict_hash, value.clone())) {
+            item.flag = ITEM_UPDATE;
+        }
+        select! {
+            send(self.set_buf, item)->res => true,
+            default => {
+               self.metrics.add(dropSets, key_hash, 1);
+                false
+            },
+        }
     }
+    fn get(&mut self, key: T) -> Option<&T> {
+        let (key_hash, confilict_hash) = (self.key_to_hash)(key);
+        self.getBuf.push(key_hash);
+        let result = self.stor.Get(key_hash, confilict_hash);
 
-    fn Set(&self, key_hash: u64, confilict_hash: u64, v: T) {
-        todo!()
-    }
-
-    fn Del(&self, key_hash: u64, confilict_hash: u64) -> (u64, T) {
-        todo!()
-    }
-
-    fn update(&self, key_hash: u64, confilict_hash: u64, v: T) -> bool {
-        todo!()
-    }
-
-    fn clear(&self) {
-        todo!()
-    }
-}
-
-impl Cache {
-    fn key_to_has(key: String) -> (u64, i64) {
-        todo!()
+        return match result {
+            None => {
+                self.metrics.add(hit, key_hash, 1);
+                None
+            },
+            Some(v) => {
+                self.metrics.add(miss, key_hash, 1);
+                Some(v)
+            }
+        }
     }
 }
 
