@@ -13,7 +13,7 @@ libmath ="0.2.1"
 rand = "0.8.5"
 aes-prng = "0.2.0"
 seahash ="4.1.0"
-
+crossbeam="0.8.2"
 crossbeam-channel = "0.5.6"
 parking_lot = "0.12.1"
 

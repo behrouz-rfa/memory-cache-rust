@@ -69,7 +69,10 @@ impl DefaultPolicy {
         if keys.len() == 0 {
             return true;
         }
-        unsafe { self.metrics.as_mut().unwrap().add(keepGets, keys[0], keys.len() as i64) };
+        unsafe {
+            self.metrics.as_mut().unwrap().add(keepGets, keys[0], keys.len() as u64)
+
+        };
         true
     }
     pub fn collect_metrics(&mut self, metrics: &mut Metrics) {

@@ -9,12 +9,12 @@ pub trait Store<T> {
 // already present.
     fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: T);
     // Del deletes the key-value pair from the Map.
-    fn Del(&mut self, key_hash: u64, confilict_hash: u64) -> (u64, T);
+    fn Del(&mut self, key_hash: u64, confilict_hash: u64) -> Option<(u64, T)>;
     // Update attempts to update the key with a new value and returns true if
 // successful.
     fn update(&mut self, key_hash: u64, confilict_hash: u64, v: T) -> bool;
     // clear clears all contents of the store.
-    fn clear(&self);
+    fn clear(&mut self);
 }
 
 struct StoreItem<T> {
@@ -64,7 +64,7 @@ impl<T> Store<T> for ShardedMap<T> {
         self.shared[(key & NUM_SHARDS) as usize].Set(key, conflict, v)
     }
 
-    fn Del(&mut self, key: u64, conflict: u64) -> (u64, T) {
+    fn Del(&mut self, key: u64, conflict: u64) -> Option<(u64, T)> {
         self.shared[(key & NUM_SHARDS) as usize].Del(key, conflict)
     }
 
@@ -72,8 +72,10 @@ impl<T> Store<T> for ShardedMap<T> {
         self.shared[(key & NUM_SHARDS) as usize].update(key, conflict, v)
     }
 
-    fn clear(&self) {
-        todo!()
+    fn clear(&mut self) {
+        for i in 0..self.shared.len() {
+            self.shared[i].clear();
+        }
     }
 }
 
@@ -101,28 +103,47 @@ impl<T> Store<T> for LockeMap<T> {
                 self.data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
-                    value
+                    value,
                 });
                 drop(l);
-
             }
             Some(v) if v.confilict != conflict && conflict != 0 => {
                 drop(l);
-                return ;
+                return;
             }
-            Some(v)=> {
+            Some(v) => {
                 self.data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
-                    value
+                    value,
                 });
                 drop(l);
             }
         }
     }
 
-    fn Del(&mut self, key_hash: u64, conflict: u64) -> (u64, T) {
-        todo!()
+    fn Del(&mut self, key_hash: u64, conflict: u64) -> Option<(u64, T)> {
+        let mut l = self.l.lock();
+        return match self.data.get(&key_hash) {
+            None => {
+                drop(l);
+
+                None
+            }
+            Some(v) => {
+                if conflict != 0 && conflict != v.confilict {
+                    drop(l);
+                    None
+                } else {
+                    let store_item = self.data.remove(&key_hash);
+                    drop(l);
+                    if let Some(item) = store_item {
+                        return Some((item.confilict, item.value));
+                    }
+                    None
+                }
+            }
+        };
     }
 
     fn update(&mut self, key_hash: u64, conflict: u64, value: T) -> bool {
@@ -134,13 +155,13 @@ impl<T> Store<T> for LockeMap<T> {
             }
             Some(v) if v.confilict != conflict && conflict != 0 => {
                 drop(l);
-                return false
+                return false;
             }
-            Some(v)=> {
+            Some(v) => {
                 self.data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
-                    value
+                    value,
                 });
                 drop(l);
                 true
@@ -148,7 +169,9 @@ impl<T> Store<T> for LockeMap<T> {
         }
     }
 
-    fn clear(&self) {
-        todo!()
+    fn clear(&mut self) {
+        let l = self.l.lock();
+        self.data = HashMap::new();
+        drop(l);
     }
 }

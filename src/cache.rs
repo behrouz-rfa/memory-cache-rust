@@ -1,29 +1,32 @@
+use std::sync::atomic::Ordering;
+use crossbeam::epoch::Atomic;
 use crossbeam_channel::{Receiver, select, Sender};
+use serde_json::Value::String;
 use crate::bloom::z::KeyHash;
 use crate::policy::{DefaultPolicy, Policy};
 use crate::ring::{RingBuffer, RingConsumer};
 use crate::store::{ShardedMap, Store};
 
 // The following 2 keep track of hits and misses.
-pub const hit: i32 = 0;
-pub const miss: i32 = 1;
+pub const hit: MetricType = 0;
+pub const miss: MetricType = 1;
 // The following 3 keep track of number of keys added, updated and evicted.
-const keyAdd: i32 = 2;
-pub const keyUpdate: i32 = 3;
-pub const keyEvict: i32 = 4;
+const keyAdd: MetricType = 2;
+pub const keyUpdate: MetricType = 3;
+pub const keyEvict: MetricType = 4;
 // The following 2 keep track of cost of keys added and evicted.
-pub const costAdd: i32 = 5;
-pub const costEvict: i32 = 6;
+pub const costAdd: MetricType = 5;
+pub const costEvict: MetricType = 6;
 // The following keep track of how many sets were dropped or rejected later.
 
-pub const dropSets: i32 = 7;
-pub const rejectSets: i32 = 8;
+pub const dropSets: MetricType = 7;
+pub const rejectSets: MetricType = 8;
 // The following 2 keep track of how many gets were kept and dropped on the
 // floor.
-pub const dropGets: i32 = 9;
-pub const keepGets: i32 = 10;
+pub const dropGets: MetricType = 9;
+pub const keepGets: MetricType = 10;
 // This should be the final enum. Other enums should be set before this.
-pub const doNotUse: i32 = 11;
+pub const doNotUse: MetricType = 11;
 
 
 /// Config is passed to NewCache for creating new Cache instances.
@@ -81,6 +84,7 @@ pub type ItemFlag = u8;
 pub const ITEM_NEW: ItemFlag = 0;
 pub const ITEM_DELETE: ItemFlag = 1;
 pub const ITEM_UPDATE: ItemFlag = 2;
+
 #[derive(Debug, Copy, Clone)]
 pub struct Item<T> {
     pub(crate) flag: ItemFlag,
@@ -90,27 +94,127 @@ pub struct Item<T> {
     pub(crate) cost: i64,
 }
 
-#[derive(Default, Clone)]
+
 pub struct Metrics {
-    pub all: Vec<u64>,
+    pub all: [[u64; 256]; doNotUse],
 }
 
-type MetricType = i32;
+type MetricType = usize;
 
 impl Metrics {
     pub fn new() -> Metrics {
-        let mut m = Metrics::default();
-        for i in 0..doNotUse {
-            m.all = vec![0u64; 256];
-            //ToDO
-            //  for j := range slice {
-            //      slice[j] = new(uint64)
-            //  }
+        Metrics {
+            all: [[0u64; 256]; doNotUse]
         }
-        m
+        // for i in 0..doNotUse {
+        //     m.all[i] = [0;256]
+        // }
+        // m
     }
-    pub fn add(&mut self, t: MetricType, hash: u64, delta: i64) {
-        todo!()
+    //TODO fix atomic
+    pub fn get(&self, t: MetricType) -> u64 {
+        let mut total = 0;
+
+        let valp = self.all[t];
+        for i in 0..valp.len() {
+            total += valp[i];
+        }
+        // let gaurd = crossbeam::epoch::pin();
+        //
+        // for i in 0..self.all.len() {
+        //     let s = self.all[i].load(Ordering::SeqCst, &gaurd);
+        //     if s.is_null() {
+        //         continue;
+        //     }
+        //
+        //     total += unsafe { s.as_ref().unwrap() }
+        // }
+        total
+    }
+    pub fn add(&mut self, t: MetricType, hash: u64, delta: u64) {
+        let idx = (hash % 5) * 10;
+        self.all[t][idx as usize] = delta;
+    }
+    // Hits is the number of Get calls where a value was found for the corresponding
+// key.
+    pub fn hits(&self) -> u64 {
+        self.get(hit)
+    }
+    // Misses is the number of Get calls where a value was not found for the
+// corresponding key.
+    pub fn Misses(&self) -> u64 {
+        self.get(miss)
+    }
+
+    pub fn KeysAdded(&self) -> u64 {
+        self.get(keyAdd)
+    }
+    pub fn KeysUpdated(&self) -> u64 {
+        self.get(keyUpdate)
+    }
+    pub fn KeysEvicted(&self) -> u64 {
+        self.get(keyEvict)
+    }
+    pub fn CostAdded(&self) -> u64 {
+        self.get(costAdd)
+    }
+    pub fn CostEvicted(&self) -> u64 {
+        self.get(costEvict)
+    }
+    pub fn SetsDropped(&self) -> u64 {
+        self.get(dropSets)
+    }
+
+    pub fn SetsRejected(&self) -> u64 {
+        self.get(rejectSets)
+    }
+
+    pub fn GetsDropped(&self) -> u64 {
+        self.get(dropGets)
+    }
+    pub fn GetsKept(&self) -> u64 {
+        self.get(keepGets)
+    }
+    pub fn ratio(&self) -> f64 {
+        let hits = self.get(hit);
+        let misses = self.get(miss);
+        if hits == 0 && misses == 0 {
+            return 0.0;
+        }
+        (hits / (misses + hits)) as f64
+    }
+
+    pub fn clear(&mut self) {
+        self.all = [[0u64; 256]; doNotUse]
+    }
+
+    pub fn string(&self) -> std::string::String {
+        let mut values = "".to_owned();
+        for i in 0..doNotUse {
+            values.push_str(&format!("{}: {} ", self.stringFor(i), self.get(i)));
+        }
+
+        values.push_str(&format!("gets-total: {} ", self.get(hit) + self.get(miss)));
+        values.push_str(&format!("gets-total: {:#02} ", self.ratio()));
+
+        values
+    }
+
+    pub fn stringFor(&self, t: MetricType) -> &str {
+        match t {
+            hit => "hit",
+            miss => "miss",
+            keyAdd => "keys-added",
+            keyUpdate => "keys-updated",
+            keyEvict => "keys-evicted",
+            costAdd => "cost-added",
+            costEvict => "cost-evicted",
+            dropSets => "sets-dropped",
+            rejectSets => "sets-rejected",
+            dropGets => "gets-dropped",
+            keepGets => "gets-kept",
+            _ => { "unidentified" }
+        }
     }
 }
 
@@ -121,7 +225,7 @@ pub struct Cache<T> {
     getBuf: RingBuffer,
     set_buf: Sender<Item<T>>,
     receiver_buf: Receiver<Item<T>>,
-    metrics: Metrics,
+    metrics: Option<Metrics>,
     key_to_hash: fn(T) -> (u64, u64),
 }
 
@@ -148,12 +252,14 @@ impl<T> Cache<T> {
     }
 
     fn collect_metrics(&mut self) {
-        self.metrics = Metrics::new();
-        self.policy.collect_metrics(&mut self.metrics);
+        self.metrics = Some(Metrics::new());
+        if let Some(ref mut m) = self.metrics {
+            self.policy.collect_metrics(m);
+        }
     }
 }
 
-impl<T:Clone> Cache<T>
+impl<T: Clone> Cache<T>
 {
     fn set(&mut self, key: T, value: T, cost: i64) -> bool {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
@@ -161,7 +267,7 @@ impl<T:Clone> Cache<T>
             flag: ITEM_NEW,
             key: key_hash,
             conflict: confilict_hash,
-            value:Some(value.clone()),
+            value: Some(value.clone()),
             cost,
         };
         // attempt to immediately update hashmap value and set flag to update so the
@@ -172,10 +278,26 @@ impl<T:Clone> Cache<T>
         select! {
             send(self.set_buf, item)->res => true,
             default => {
-               self.metrics.add(dropSets, key_hash, 1);
+                if let Some(ref mut m) = self.metrics {
+                 m.add(dropSets, key_hash, 1);
+              }
+
+
                 false
             },
         }
+    }
+    fn del(&mut self, key: T) {
+        let (key_hash, confilict_hash) = (self.key_to_hash)(key);
+        let item = Item {
+            flag: ITEM_DELETE,
+            key: key_hash,
+            conflict: confilict_hash,
+            value: None,
+            cost: 0,
+        };
+
+        self.set_buf.send(item);
     }
     fn get(&mut self, key: T) -> Option<&T> {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
@@ -184,19 +306,30 @@ impl<T:Clone> Cache<T>
 
         return match result {
             None => {
-                self.metrics.add(hit, key_hash, 1);
+                if let Some(ref mut m) = self.metrics {
+                    m.add(hit, key_hash, 1);
+                }
+
                 None
-            },
+            }
             Some(v) => {
-                self.metrics.add(miss, key_hash, 1);
+                if let Some(ref mut m) = self.metrics {
+                    m.add(miss, key_hash, 1);
+                }
+
                 Some(v)
             }
-        }
+        };
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::cache::Cache;
+
     #[test]
-    fn test() {}
+    fn TestCacheKeyToHash() {
+        // let mut key_to_hash_count = 0;
+        // let mut cache = Cache::new()
+    }
 }
