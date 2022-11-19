@@ -60,7 +60,7 @@ pub struct Config<K, V> {
     // NumCounters should be 10,000,000 (10x). Each counter takes up 4 bits, so
     // keeping 10,000,000 counters would require 5MB of memory.
 
-    numb_counters: i64,
+  pub  numb_counters: i64,
     // max_cost can be considered as the cache capacity, in whatever units you
     // choose to use.
     //
@@ -69,23 +69,23 @@ pub struct Config<K, V> {
     // the `cost` parameter for calls to Set. If new items are accepted, the
     // eviction process will take care of making room for the new item and not
     // overflowing the MaxCost value.
-    max_cost: i64,
+    pub  max_cost: i64,
 
     // buffer_items determines the size of Get buffers.
     //
     // Unless you have a rare use case, using `64` as the buffer_items value
     // results in good performance.
-    buffer_items: usize,
+    pub   buffer_items: usize,
     // metrics determines whether cache statistics are kept during the cache's
     // lifetime. There *is* some overhead to keeping statistics, so you should
     // only set this flag to true when testing or throughput performance isn't a
     // major factor.
-    metrics: bool,
+    pub   metrics: bool,
 
-    key_to_hash: fn(K) -> (u64, u64),
+    pub  key_to_hash: fn(K) -> (u64, u64),
 
-    on_evict: Option<fn(u64, u64, V, i64)>,
-    cost: Option<fn(V) -> i64>,
+    pub  on_evict: Option<fn(u64, u64, V, i64)>,
+    pub   cost: Option<fn(V) -> i64>,
 }
 
 /// Config is passed to NewCache for creating new Cache instances.
@@ -306,7 +306,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
     /// To dynamically evaluate the items cost using the Config.Coster function, set
     /// the cost parameter to 0 and Coster will be ran when needed in order to find
     /// the items true cost.
-    fn set(&mut self, key: K, value: V, cost: i64, guard: &Guard) -> bool {
+    pub fn set(&mut self, key: K, value: V, cost: i64, guard: &Guard) -> bool {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
         let mut item = Item {
             flag: ITEM_NEW,
@@ -331,7 +331,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
         }
     }
     /// Del deletes the key-value item from the cache if it exists.
-    fn del(&mut self, key: K) {
+    pub fn del(&mut self, key: K) {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
         let item = Item {
             flag: ITEM_DELETE,
@@ -347,7 +347,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
     /// Get returns the value (if any) and a boolean representing whether the
     /// value was found or not. The value can be nil and the boolean can be true at
     /// the same time.
-    fn get<'a>(&mut self, key: K, guard: &'a Guard) -> Option<&'a V> {
+    pub fn get<'a>(&mut self, key: K, guard: &'a Guard) -> Option<&'a V> {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
         self.get_buf.push(key_hash);
         let result = self.stor.Get(key_hash, confilict_hash, guard);
@@ -370,7 +370,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
         };
     }
     /// Close stops all goroutines and closes all channels.
-    fn close(&mut self, guard: &Guard) {
+    pub  fn close(&mut self, guard: &Guard) {
         // block until processItems  is returned
         self.stop_sender.try_send(true);
         self.policy.close()
@@ -378,7 +378,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
     /// Clear empties the hashmap and zeroes all policy counters. Note that this is
     /// not an atomic operation (but that shouldn't be a problem as it's assumed that
     /// Set/Get calls won't be occurring until after this).
-    fn clear(&mut self, guard: &Guard) {
+    pub fn clear(&mut self, guard: &Guard) {
         // block until processItems  is returned
         self.stop_sender.try_send(true);
         let guard = crossbeam::epoch::pin();
@@ -470,7 +470,7 @@ mod tests {
     use crate::cache::{Cache, Config};
 
     #[test]
-    fn TestCacheKeyToHash() {
+    fn test_cache_key_to_hash() {
         let mut key_to_hash_count = 0;
         let mut cache = Cache::new(
             Config {
@@ -485,10 +485,15 @@ mod tests {
         );
 
         let guard = crossbeam::epoch::pin();
-        if cache.set("key", "value", 1, &guard) {
-            thread::sleep(Duration::from_millis(2000));
-            println!("{:?}", cache.get("key", &guard));
-        }
+        cache.set("key", "value", 1, &guard);
+        thread::sleep(Duration::from_millis(10));
+       let v =  cache.get("key",&guard);
+        assert_eq!(v,Some(&"value"));
+
+        cache.del("key");
+        thread::sleep(Duration::from_millis(10));
+        let v =  cache.get("key",&guard);
+        assert_eq!(v,None);
         // cache.set(1, 1, 1, &guard);
     }
 }
