@@ -216,7 +216,7 @@ impl<T> DefaultPolicy<T> {
         return;
     }
 
-    pub fn Clear(&mut self, guard: &Guard) {
+    pub fn clear(&mut self, guard: &Guard) {
         let mut evict = self.evict.load(Ordering::SeqCst, guard);
         if evict.is_null() {
             return;

@@ -23,7 +23,10 @@ impl Hash for StringStruct {
     }
 }
 
-pub fn MemHash(data: &[u8]) -> u64 {
+/// mem_hash is the hash function used by go map, it utilizes available hardware instructions(behaves
+/// as aeshash if aes instruction is available).
+/// NOTE: The hash seed changes for every process. So, this cannot be used as a persistent hash.
+pub fn mem_hash(data: &[u8]) -> u64 {
     // let (head, body, _tail) = unsafe { data.align_to::<StringStruct>() };
     // assert!(head.is_empty(), "Data was not aligned");
     // let my_struct = &body[0];
@@ -35,7 +38,11 @@ pub fn MemHash(data: &[u8]) -> u64 {
     // let hash = s.finish();
     hash
 }
-pub fn MemHashByte(data: &[u8]) -> u64 {
+
+/// mem_hash is the hash function used by go map, it utilizes available hardware instructions(behaves
+/// as aeshash if aes instruction is available).
+/// NOTE: The hash seed changes for every process. So, this cannot be used as a persistent hash.
+pub fn mem_hash_byte(data: &[u8]) -> u64 {
     // let (head, body, _tail) = unsafe { data.align_to::<StringStruct>() };
     // assert!(head.is_empty(), "Data was not aligned");
     // let my_struct = &body[0];

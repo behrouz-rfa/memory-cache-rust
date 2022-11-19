@@ -1,5 +1,5 @@
 use std::any::{Any, TypeId};
-use crate::bloom::rutil::{MemHash, MemHashByte};
+use crate::bloom::rutil::{mem_hash, mem_hash_byte};
 use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -16,18 +16,18 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 
         let v =    cast_ref::<_, String>(&key).unwrap();
         let raw = v.as_bytes();
-        return (MemHash(raw), const_xxh3(raw) as u64);
+        return (mem_hash(raw), const_xxh3(raw) as u64);
     }
     if let Ok(key) = String::try_from(key) {
 
         let raw = key.as_bytes();
-        return (MemHash(raw), const_xxh3(raw) as u64);
+        return (mem_hash(raw), const_xxh3(raw) as u64);
     }
 
     // if equals::<T, Vec<u8>>() {
     //     let value = unsafe { std::mem::transmute::<T, Vec<u8>>(key) };
     //
-    //     return (MemHash(&value), const_xxh3(&value) as i64);
+    //     return (mem_hash(&value), const_xxh3(&value) as i64);
     // }
 
 
@@ -78,9 +78,9 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 
     // if TypeId::of::<T>() == TypeId::of::<[u8]>() {
     //     let raw = (key) as [u8];
-    //     return (MemHashByte(&raw), const_xxh3(&raw) as i64);
+    //     return (mem_hash_byte(&raw), const_xxh3(&raw) as i64);
     // }
-    // return (MemHash(&mut key.into_bytes()), const_xxh3(&* key.into_bytes()) as i64);
+    // return (mem_hash(&mut key.into_bytes()), const_xxh3(&* key.into_bytes()) as i64);
 }
 
 

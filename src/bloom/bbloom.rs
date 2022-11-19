@@ -1,3 +1,13 @@
+//!A Bloom filter is a space-efficient probabilistic data structure,
+//! conceived by Burton Howard Bloom in 1970,
+//! that is used to test whether an element is a member of a set.
+//! False positive matches are possible, but false negatives are not – in other words,
+//! a query returns either "possibly in set" or "definitely not in set".
+//! Elements can be added to the set, but not removed (though this can be addressed with the counting Bloom filter variant);
+//! the more items added, the larger the probability of false positives.
+
+
+
 use math::round;
 use serde::{Serialize, Deserialize};
 
@@ -43,7 +53,18 @@ impl Bloom {
         b.size(size);
         b
     }
-
+    /// <--- http://www.cse.yorku.ca/~oz/hash.html
+    /// modified Berkeley DB Hash (32bit)
+    /// hash is casted to l, h = 16bit fragments
+    /// func (bl Bloom) absdbm(b *[]byte) (l, h uint64) {
+    /// 	hash := uint64(len(*b))
+    /// 	for _, c := range *b {
+    /// 		hash = uint64(c) + (hash << 6) + (hash << bl.sizeExp) - hash
+    /// 	}
+    /// 	h = hash >> bl.shift
+    ///    l = hash << bl.shift >> bl.shift
+    /// 	return l, h
+    /// }
     pub fn add(&mut self, hash: u64) {
         let h = hash >> self.shift;
         let l = hash << self.shift >> self.shift;
@@ -54,17 +75,17 @@ impl Bloom {
         };
     }
 
-    pub   fn add_if_not_has(&mut self, hash: u64) -> bool {
+    pub fn add_if_not_has(&mut self, hash: u64) -> bool {
         if self.has(hash) {
             return false;
         }
         self.add(hash);
         true
     }
-    pub  fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.bitset = vec![0; self.bitset.len()]
     }
-    pub  fn set(&mut self, idx: u64) {
+    pub fn set(&mut self, idx: u64) {
         // let b = *self.bitset[(idx >> 6) as usize];
 
         // let ptr:*mut [i64] =  self.bitset as *mut [i64];
@@ -102,7 +123,8 @@ impl Bloom {
     pub fn size(&mut self, sz: u64) {
         self.bitset = vec![0i64; (sz >> 6) as usize]
     }
-
+    /// Has checks if bit(s) for entry hash is/are set,
+    /// returns true if the hash was added to the Bloom Filter.
     pub fn has(&mut self, hash: u64) -> bool {
         let h = hash >> self.shift;
         let l = hash << self.shift >> self.shift;
@@ -176,7 +198,7 @@ mod tests {
     use std::collections::HashMap;
     use rand::{Rng, RngCore, SeedableRng};
     use rand::rngs::StdRng;
-    use crate::bloom::rutil::{Memhash, MemHash};
+    use crate::bloom::rutil::{Memhash, mem_hash};
     use super::*;
 
     const N: usize = 1 << 16;
@@ -201,15 +223,15 @@ mod tests {
     fn test_number_of_wrong() {
         let mut bf = Bloom::new((N * 10) as f64, 7.0);
         let mut cnt = 0;
-       /* let word_list = worldlist();
-        // bf.add_if_not_has(1147594788350054766);
-        for i in 0..word_list.len() {
-            let hash = MemHash(&mut word_list);
+        /* let word_list = worldlist();
+         // bf.add_if_not_has(1147594788350054766);
+         for i in 0..word_list.len() {
+             let hash = mem_hash(&mut word_list);
 
-            if !bf.add_if_not_has(hash.into()) {
-                cnt += 1;
-            }
-        }*/
+             if !bf.add_if_not_has(hash.into()) {
+                 cnt += 1;
+             }
+         }*/
 
         println!("Bloomfilter New(7* 2**16, 7) \
             (-> size={} bit): \n    \

@@ -3,17 +3,22 @@ use std::sync::atomic::Ordering;
 use crossbeam::epoch::{Atomic, Guard};
 use parking_lot::Mutex;
 
-
+/// store is the interface fulfilled by all hash map implementations in this
+/// file. Some hash map implementations are better suited for certain data
+/// distributions than others, so this allows us to abstract that out for use
+/// in Ristretto.
+///
+/// Every store is safe for concurrent usage.
 pub trait Store<V> {
     // Get returns the value associated with the key parameter.
     fn Get<'g>(&self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<&'g V>;
     // Set adds the key-value pair to the Map or updates the value if it's
-// already present.
+    // already present.
     fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: & Guard);
     // Del deletes the key-value pair from the Map.
     fn Del<'g>(&mut self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<(u64, V)>;
     // Update attempts to update the key with a new value and returns true if
-// successful.
+    // successful.
     fn update<'g>(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: &'g Guard) -> bool;
     // clear clears all contents of the store.
     fn clear<'g>(&mut self, guard: &'g Guard);
@@ -43,21 +48,21 @@ impl<V> LockeMap<V> {
     }
 }
 
-const numShards: usize = 256;
-
+const NUM_SHARDS: u64 = 256;
 impl<V> ShardedMap<V> {
+    /// newStore returns the default store implementation.
     pub(crate) fn new() -> Self {
         let mut sm = ShardedMap {
             shared: Vec::new()
         };
-        for i in 0..numShards {
+        for i in 0..NUM_SHARDS {
             sm.shared.push(LockeMap::new())
         }
         sm
     }
 }
 
-const NUM_SHARDS: u64 = 256;
+
 
 impl<V> Store<V> for ShardedMap<V> {
     fn Get<'g>(&self, key: u64, conflict: u64, guard: &'g Guard) -> Option<&'g V> {
