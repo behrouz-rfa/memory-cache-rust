@@ -1,10 +1,10 @@
 use crate::cache::Metrics;
 
-mod tiny_lfu;
-mod bloom;
-mod cache;
-mod store;
-mod policy;
-mod cmsketch;
-mod ring;
+pub mod tiny_lfu;
+pub mod bloom;
+pub mod cache;
+pub mod store;
+pub mod policy;
+pub mod cmsketch;
+pub mod ring;
 
