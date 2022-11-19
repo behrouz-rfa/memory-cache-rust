@@ -3,7 +3,7 @@ use std::thread;
 use crossbeam::epoch::{Atomic, Guard};
 use crossbeam_channel::{Receiver, Sender, select};
 use serde_json::Value::String;
-use crate::bloom::z::KeyHash;
+use crate::bloom::hasher::KeyHash;
 use crate::policy::{DefaultPolicy, Policy};
 use crate::ring::{RingBuffer, RingConsumer};
 use crate::store::{ShardedMap, Store};
@@ -465,8 +465,8 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
 mod tests {
     use std::thread;
     use std::time::Duration;
-    use crate::bloom::z;
-    use crate::bloom::z::{key_to_hash, KeyHash, value_to_int};
+    use crate::bloom::hasher;
+    use crate::bloom::hasher::{key_to_hash, KeyHash, value_to_int};
     use crate::cache::{Cache, Config};
 
     #[test]

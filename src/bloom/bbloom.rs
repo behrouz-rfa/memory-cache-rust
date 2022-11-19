@@ -74,7 +74,9 @@ impl Bloom {
             self.elem_num += 1;
         };
     }
-
+    /// AddIfNotHas only Adds hash, if it's not present in the bloomfilter.
+    /// Returns true if hash was added.
+    /// Returns false if hash was already registered in the bloomfilter.
     pub fn add_if_not_has(&mut self, hash: u64) -> bool {
         if self.has(hash) {
             return false;
@@ -82,9 +84,11 @@ impl Bloom {
         self.add(hash);
         true
     }
+    /// Clear resets the Bloom filter.
     pub fn clear(&mut self) {
         self.bitset = vec![0; self.bitset.len()]
     }
+    /// Set sets the bit[idx] of bitset.
     pub fn set(&mut self, idx: u64) {
         // let b = *self.bitset[(idx >> 6) as usize];
 
@@ -119,7 +123,7 @@ impl Bloom {
         /*  let mut ptr = self.bitset[(idx >> 6) as usize] + ((idx % 64) >> 3) as i64;
           ptr as i64 |= MASK[(idx & 8) as usize];*/
     }
-
+    /// Size makes Bloom filter with as bitset of size sz.
     pub fn size(&mut self, sz: u64) {
         self.bitset = vec![0i64; (sz >> 6) as usize]
     }
@@ -136,6 +140,7 @@ impl Bloom {
 
         true
     }
+    /// IsSet checks if bit[idx] of bitset is set, returns true/false.
     pub fn isset(&mut self, idx: u64) -> bool {
         let mut ptr: *mut i64 = self.bitset.as_mut_ptr();
         // if ((idx >> 6) + ((idx % 64) >> 3)) as usize > self.bitset.len() {
@@ -198,40 +203,40 @@ mod tests {
     use std::collections::HashMap;
     use rand::{Rng, RngCore, SeedableRng};
     use rand::rngs::StdRng;
-    use crate::bloom::rutil::{Memhash, mem_hash};
+    use crate::bloom::rutil::{Memhash, mem_hash, mem_hash_byte};
     use super::*;
 
     const N: usize = 1 << 16;
 
 
-    // fn worldlist() -> Vec<[u8]> {
-    //     let seed = [0u8];
-    //     let mut rng: StdRng = SeedableRng::from_seed(seed);
-    //
-    //     let mut wordlist = vec![[0u8]; N];
-    //     for i in 0..wordlist.len() {
-    //         let mut bytes = [0u8];
-    //         rng.fill_bytes(&mut bytes);
-    //         let v = rand::thread_rng().gen::<[u8]>();
-    //
-    //         wordlist[i] = bytes;
-    //     }
-    //     wordlist
-    // }
+    fn worldlist() -> Vec<Vec<u8>> {
+        let seed = [0u8; 32];
+        let mut rng: StdRng = SeedableRng::from_seed(seed);
+
+        let mut wordlist = vec![vec![]];
+        for i in 0..wordlist.len() {
+            let mut bytes = [0u8; 32];
+            rng.fill_bytes(&mut bytes);
+            let v = rand::thread_rng().gen::<[u8; 32]>();
+
+            wordlist.push(Vec::from(bytes));
+        }
+        wordlist
+    }
 
     #[test]
     fn test_number_of_wrong() {
         let mut bf = Bloom::new((N * 10) as f64, 7.0);
         let mut cnt = 0;
-        /* let word_list = worldlist();
+       let word_list = worldlist();
          // bf.add_if_not_has(1147594788350054766);
          for i in 0..word_list.len() {
-             let hash = mem_hash(&mut word_list);
+             let hash = mem_hash(&*word_list[i]);
 
              if !bf.add_if_not_has(hash.into()) {
                  cnt += 1;
              }
-         }*/
+         }
 
         println!("Bloomfilter New(7* 2**16, 7) \
             (-> size={} bit): \n    \

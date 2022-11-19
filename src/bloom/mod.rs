@@ -1,3 +1,3 @@
 pub mod bbloom;
 pub mod rutil;
-pub mod z;
+pub mod hasher;
