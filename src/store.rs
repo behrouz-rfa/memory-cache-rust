@@ -14,7 +14,7 @@ pub trait Store<V> {
     fn Get<'g>(&self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<&'g V>;
     // Set adds the key-value pair to the Map or updates the value if it's
     // already present.
-    fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: & Guard);
+    fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: &Guard);
     // Del deletes the key-value pair from the Map.
     fn Del<'g>(&mut self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<(u64, V)>;
     // Update attempts to update the key with a new value and returns true if
@@ -49,6 +49,7 @@ impl<V> LockeMap<V> {
 }
 
 const NUM_SHARDS: u64 = 256;
+
 impl<V> ShardedMap<V> {
     /// newStore returns the default store implementation.
     pub(crate) fn new() -> Self {
@@ -63,14 +64,13 @@ impl<V> ShardedMap<V> {
 }
 
 
-
 impl<V> Store<V> for ShardedMap<V> {
     fn Get<'g>(&self, key: u64, conflict: u64, guard: &'g Guard) -> Option<&'g V> {
         self.shared[(key & NUM_SHARDS) as usize].Get(key, conflict, guard)
     }
 
     fn Set(&mut self, key: u64, conflict: u64, v: V, guard: &Guard) {
-        self.shared[(key & NUM_SHARDS) as usize].Set(key, conflict, v, guard)
+        self.shared[(key % NUM_SHARDS) as usize].Set(key, conflict, v, guard)
     }
 
     fn Del<'g>(&mut self, key: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
@@ -88,97 +88,112 @@ impl<V> Store<V> for ShardedMap<V> {
     }
 }
 
-impl<V> Store<V> for LockeMap<V> {
+impl<V:> Store<V> for LockeMap<V> {
     fn Get<'g>(&self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<&'g V> {
-        let data = self.data.load(Ordering::SeqCst, guard);
-        if data.is_null() {
-            return None;
-        }
-        let data = unsafe { data.deref() };
-        match data.get(&key_hash) {
-            None => None,
-            Some(v) => {
-                if confilict_hash != 0 && confilict_hash != v.confilict {
-                    None
-                } else {
-                    Some(&v.value)
-                }
+        loop {
+            let data = self.data.load(Ordering::SeqCst, guard);
+            if data.is_null() {
+                continue;
             }
+            let data = unsafe { data.deref() };
+            return match data.get(&key_hash) {
+                None => None,
+                Some(v) => {
+                    if confilict_hash != 0 && confilict_hash != v.confilict {
+                        None
+                    } else {
+                        Some(&v.value)
+                    }
+                }
+            };
         }
     }
 
     fn Set<'g>(&mut self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) {
-        let mut data = self.data.load(Ordering::SeqCst, guard);
-        if data.is_null() {
-            return ;
-        }
-        let data = unsafe { data.deref_mut() };
-        match data.get(&key_hash) {
-            None => {
-                data.insert(key_hash, StoreItem {
-                    key: key_hash,
-                    confilict: conflict,
-                    value,
-                });
+        loop {
+            let mut data = self.data.load(Ordering::SeqCst, guard);
+            if data.is_null() {
+                continue;
             }
-            Some(v) if v.confilict != conflict && conflict != 0 => {
-                return;
-            }
-            Some(v) => {
-               data.insert(key_hash, StoreItem {
-                    key: key_hash,
-                    confilict: conflict,
-                    value,
-                });
+            let data = unsafe { data.deref_mut() };
+
+            match data.get(&key_hash) {
+                None => {
+                    data.insert(key_hash, StoreItem {
+                        key: key_hash,
+                        confilict: conflict,
+                        value,
+                    });
+                    eprintln!("data {}",data.len());
+                    return;
+                }
+                Some(v) if v.confilict != conflict && conflict != 0 => {
+                    return;
+                }
+                Some(v) => {
+                    data.insert(key_hash, StoreItem {
+                        key: key_hash,
+                        confilict: conflict,
+                        value,
+                    });
+                    eprintln!("data {}",data.len());
+                    return;
+                }
             }
         }
     }
 
     fn Del<'g>(&mut self, key_hash: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
-        let mut data = self.data.load(Ordering::SeqCst, guard);
-        if data.is_null() {
-            return None;
-        }
-        let data = unsafe { data.deref_mut() };
-        return match data.get(&key_hash) {
-            None => {
-                None
+        loop {
+            let mut data = self.data.load(Ordering::SeqCst, guard);
+            if data.is_null() {
+                continue;
             }
-            Some(v) => {
-                if conflict != 0 && conflict != v.confilict {
-                    None
-                } else {
-                    let store_item = data.remove(&key_hash);
-                    if let Some(item) = store_item {
-                        return Some((item.confilict, item.value));
-                    }
+            let data = unsafe { data.deref_mut() };
+            println!("deleted {}",data.len());
+
+            return match data.get(&key_hash) {
+                None => {
                     None
                 }
-            }
-        };
+                Some(v) => {
+                    if conflict != 0 && conflict != v.confilict {
+                        None
+                    } else {
+                        let store_item = data.remove(&key_hash);
+                        if let Some(item) = store_item {
+                            return Some((item.confilict, item.value));
+                        }
+                        None
+                    }
+                }
+            };
+        }
     }
 
     fn update<'g>(&mut self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) -> bool {
-        let mut data = self.data.load(Ordering::SeqCst, guard);
-        if data.is_null() {
-            return false;
-        }
-        let data = unsafe { data.deref_mut() };
-        match data.get(&key_hash) {
-            None => {
-                return false;
+        loop {
+            let mut data = self.data.load(Ordering::SeqCst, guard);
+            if data.is_null() {
+                continue;
             }
-            Some(v) if v.confilict != conflict && conflict != 0 => {
-                return false;
-            }
-            Some(v) => {
-                data.insert(key_hash, StoreItem {
-                    key: key_hash,
-                    confilict: conflict,
-                    value,
-                });
+            let data = unsafe { data.deref_mut() };
+            match data.get(&key_hash) {
+                None => {
+                    return false;
+                }
+                Some(v) if v.confilict != conflict && conflict != 0 => {
+                    return false;
+                }
+                Some(v) => {
+                    data.insert(key_hash, StoreItem {
+                        key: key_hash,
+                        confilict: conflict,
+                        value,
+                    });
 
-                true
+                    return true;
+                }
             }
         }
     }
@@ -186,7 +201,7 @@ impl<V> Store<V> for LockeMap<V> {
     fn clear<'g>(&mut self, guard: &'g Guard) {
         let mut data = self.data.load(Ordering::SeqCst, guard);
         if data.is_null() {
-            return ;
+            return;
         }
         let data = unsafe { data.deref_mut() };
         self.data = Atomic::null();

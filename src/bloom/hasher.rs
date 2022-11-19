@@ -9,7 +9,8 @@ use std::mem::size_of;
 pub type KeyHash<T> = Box<dyn FnMut(T) -> (u64, i64)>;
 
 pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
-    where std::string::String: From<T>
+
+
 {
 
     if equals::<T, String>() {
@@ -18,11 +19,7 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
         let raw = v.as_bytes();
         return (mem_hash(raw), const_xxh3(raw) as u64);
     }
-    if let Ok(key) = String::try_from(key) {
 
-        let raw = key.as_bytes();
-        return (mem_hash(raw), const_xxh3(raw) as u64);
-    }
 
     // if equals::<T, Vec<u8>>() {
     //     let value = unsafe { std::mem::transmute::<T, Vec<u8>>(key) };
@@ -73,7 +70,11 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 
         return (*value as u64, 0);
     }
-    panic!("! Key type not supported")
+
+    let v =    cast_ref::<_, String>(&key).unwrap();
+    let raw = v.as_bytes();
+    return (mem_hash(raw), const_xxh3(raw) as u64);
+    // panic!("! Key type not supported")
 
 
     // if TypeId::of::<T>() == TypeId::of::<[u8]>() {

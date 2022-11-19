@@ -35,10 +35,10 @@ pub const doNotUse: MetricType = 11;
 /// from as many goroutines as you want.
 #[derive(Clone)]
 pub struct Cache<K, V> {
-    stor: ShardedMap<V>,
-    policy: DefaultPolicy<V>,
+    pub store: ShardedMap<V>,
+   pub policy: DefaultPolicy<V>,
     get_buf: RingBuffer<V>,
-    set_buf: Sender<Item<V>>,
+    pub set_buf: Sender<Item<V>>,
     receiver_buf: Receiver<Item<V>>,
     stop_sender: Sender<bool>,
     stop: Receiver<bool>,
@@ -60,7 +60,7 @@ pub struct Config<K, V> {
     // NumCounters should be 10,000,000 (10x). Each counter takes up 4 bits, so
     // keeping 10,000,000 counters would require 5MB of memory.
 
-  pub  numb_counters: i64,
+    pub numb_counters: i64,
     // max_cost can be considered as the cache capacity, in whatever units you
     // choose to use.
     //
@@ -69,23 +69,23 @@ pub struct Config<K, V> {
     // the `cost` parameter for calls to Set. If new items are accepted, the
     // eviction process will take care of making room for the new item and not
     // overflowing the MaxCost value.
-    pub  max_cost: i64,
+    pub max_cost: i64,
 
     // buffer_items determines the size of Get buffers.
     //
     // Unless you have a rare use case, using `64` as the buffer_items value
     // results in good performance.
-    pub   buffer_items: usize,
+    pub buffer_items: usize,
     // metrics determines whether cache statistics are kept during the cache's
     // lifetime. There *is* some overhead to keeping statistics, so you should
     // only set this flag to true when testing or throughput performance isn't a
     // major factor.
-    pub   metrics: bool,
+    pub metrics: bool,
 
-    pub  key_to_hash: fn(K) -> (u64, u64),
+    pub key_to_hash: fn(K) -> (u64, u64),
 
-    pub  on_evict: Option<fn(u64, u64, V, i64)>,
-    pub   cost: Option<fn(V) -> i64>,
+    pub on_evict: Option<fn(u64, u64, V, i64)>,
+    pub cost: Option<fn(V) -> i64>,
 }
 
 /// Config is passed to NewCache for creating new Cache instances.
@@ -107,11 +107,11 @@ pub const ITEM_UPDATE: ItemFlag = 2;
 /// cache
 #[derive(Debug, Copy, Clone)]
 pub struct Item<T> {
-    pub(crate) flag: ItemFlag,
-    pub(crate) key: u64,
-    pub(crate) conflict: u64,
-    pub(crate) value: Option<T>,
-    pub(crate) cost: i64,
+    pub flag: ItemFlag,
+    pub key: u64,
+    pub conflict: u64,
+    pub value: Option<T>,
+    pub cost: i64,
 }
 
 
@@ -257,7 +257,7 @@ impl<K, V> Cache<K, V>
         let (stop_tx, stop_rx) = crossbeam_channel::unbounded();
         let bf = RingBuffer::new(&mut p, c.buffer_items);
         let mut cache = Cache {
-            stor: ShardedMap::new(),
+            store: ShardedMap::new(),
             get_buf: bf,
             policy: p,
             set_buf: tx,
@@ -295,7 +295,7 @@ impl<K, V> Cache<K, V>
     }
 }
 
-impl<K:Send, V: Clone + Send> Cache<K, V>
+impl<K: Send, V: Clone + Send> Cache<K, V>
 {
     /// Set attempts to add the key-value item to the cache. If it returns false,
     /// then the Set was dropped and the key-value item isn't added to the cache. If
@@ -317,7 +317,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
         };
         // attempt to immediately update hashmap value and set flag to update so the
         // cost is eventually updated
-        if self.stor.update(key_hash, confilict_hash, value.clone(), guard) {
+        if self.store.update(key_hash, confilict_hash, value.clone(), guard) {
             item.flag = ITEM_UPDATE;
         }
         select! {
@@ -350,7 +350,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
     pub fn get<'a>(&mut self, key: K, guard: &'a Guard) -> Option<&'a V> {
         let (key_hash, confilict_hash) = (self.key_to_hash)(key);
         self.get_buf.push(key_hash);
-        let result = self.stor.Get(key_hash, confilict_hash, guard);
+        let result = self.store.Get(key_hash, confilict_hash, guard);
 
         return match result {
             None => {
@@ -365,12 +365,13 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
                     m.add(miss, key_hash, 1);
                 }
 
-                Some(v)
+                //Some(&v)
+                None
             }
         };
     }
     /// Close stops all goroutines and closes all channels.
-    pub  fn close(&mut self, guard: &Guard) {
+    pub fn close(&mut self, guard: &Guard) {
         // block until processItems  is returned
         self.stop_sender.try_send(true);
         self.policy.close()
@@ -383,7 +384,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
         self.stop_sender.try_send(true);
         let guard = crossbeam::epoch::pin();
         self.policy.clear(&guard);
-        self.stor.clear(&guard);
+        self.store.clear(&guard);
         if let Some(ref mut metrics) = self.metrics {
             metrics.clear();
         }
@@ -392,10 +393,10 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
         self.receiver_buf = rx;
 
         //TODO fix thead after clear
-       /* thread::spawn( || {
-            let guard = crossbeam::epoch::pin();
-            self.process_items(&guard);
-        });*/
+        /* thread::spawn( || {
+             let guard = crossbeam::epoch::pin();
+             self.process_items(&guard);
+         });*/
     }
 
     fn process_items(&mut self, guard: &Guard) {
@@ -405,21 +406,23 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
                     match item {
                         Ok(mut i)=> {
                                 //todo cost fn
-                            if i.cost ==0 && self.cost.is_some() && i.flag == ITEM_DELETE {
+                            if i.cost ==0 && self.cost.is_some() && i.flag != ITEM_DELETE {
                                     i.cost = (self.cost.unwrap())(i.value.clone().unwrap())
                             }
                             match i.flag {
                                 ITEM_NEW=>{
-                                    let  (mut victims, added ) = self.policy.add(i.key,i.conflict as i64,guard);
+
+                                    let  (mut victims, added ) = self.policy.add(i.key,i.cost ,guard);
                                     if added {
-                                        self.stor.Set(i.key,i.conflict,i.value.unwrap(),guard);
+                                        self.store.Set(i.key,i.conflict,i.value.unwrap(),guard);
                                         if let Some(ref mut metrics) = self.metrics {
                                             metrics.add(keyAdd,i.key,1);
                                             metrics.add(costAdd,i.key,i.cost as u64);
                                         }
                                     }
                                     for i in 0..victims.len() {
-                                        let mut delVal = self.stor.Del(victims[i].key,0,guard);
+
+                                        let mut delVal = self.store.Del(victims[i].key,0,guard);
                                         match delVal {
                                             Some((mut c,mut v))=>{
                                                  victims[i].value = Some(v.clone());
@@ -445,7 +448,7 @@ impl<K:Send, V: Clone + Send> Cache<K, V>
                                 },
                                 ITEM_DELETE=>{
                                     self.policy.del(i.key,guard);
-                                    self.stor.Del(i.key,i.conflict,guard);
+                                    self.store.Del(i.key,i.conflict,guard);
                                 }
                                 _=>{continue}
 
@@ -487,13 +490,13 @@ mod tests {
         let guard = crossbeam::epoch::pin();
         cache.set("key", "value", 1, &guard);
         thread::sleep(Duration::from_millis(10));
-       let v =  cache.get("key",&guard);
-        assert_eq!(v,Some(&"value"));
+        let v = cache.get("key", &guard);
+        assert_eq!(v, Some(&"value"));
 
         cache.del("key");
         thread::sleep(Duration::from_millis(10));
-        let v =  cache.get("key",&guard);
-        assert_eq!(v,None);
+        let v = cache.get("key", &guard);
+        assert_eq!(v, None);
         // cache.set(1, 1, 1, &guard);
     }
 }

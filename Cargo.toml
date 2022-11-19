@@ -28,8 +28,10 @@ seahash ="4.1.0"
 crossbeam="0.8.2"
 crossbeam-channel = "0.5.6"
 parking_lot = "0.12.1"
-
+seize = "0.2.1"
 syncpool = "0.1.6"
+concache= "0.2.1"
 [dependencies.xxhash-rust]
 version = "0.8.5"
 features = ["xxh3", "const_xxh3"]
+

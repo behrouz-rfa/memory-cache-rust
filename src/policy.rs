@@ -153,32 +153,38 @@ impl<T> DefaultPolicy<T> {
             room = evict.room_left(cost);
             // fill up empty slots in sample
             evict.fill_sample(&mut sample);
-            let mut minKey: u64 = 0;
-            let mut minHits: i64 = i64::MAX;
-            let mut minId: i64 = 0;
-            let mut minCost: i64 = 0;
+            let mut min_key: u64 = 0;
+            let mut min_hits: i64 = i64::MAX;
+            let mut min_id: i64 = 0;
+            let mut min_cost: i64 = 0;
 
             for (i, pair) in sample.iter().enumerate() {
                 let hits = admit.estimate(pair.key);
-                if hits < minHits {
-                    minKey = pair.key;
-                    minHits = hits;
-                    minId = i as i64;
-                    minCost = pair.cost;
+                if hits < min_hits {
+                    min_key = pair.key;
+                    min_hits = hits;
+                    min_id = i as i64;
+                    min_cost = pair.cost;
                 }
             }
-            if inc_hits < minHits {
-                unsafe { self.metrics.as_mut().unwrap().add(rejectSets, key, 1) };
+            if inc_hits < min_hits {
+                unsafe {
+                    if !self.metrics.is_null() {
+                        unsafe {
+                            self.metrics.as_mut().unwrap().add(rejectSets, key, 1)
+                        };
+                    }
+                }
                 return (victims, false);
             }
-            evict.del(minKey);
-            sample[minId as usize] = sample[sample.len() - 1];
+            evict.del(min_key);
+            sample[min_id as usize] = sample[sample.len() - 1];
             victims.push(Item {
                 flag: ITEM_NEW,
-                key: minKey,
+                key: min_key,
                 conflict: 0,
                 value: None,
-                cost: minCost,
+                cost: min_cost,
             })
         };
         evict.add(key, cost);
@@ -236,7 +242,7 @@ impl<T> DefaultPolicy<T> {
     pub fn close(&mut self) {
         self.stop.0.send(true).expect("Chanla close");
     }
-    pub fn cost(&mut self, key: u64, cost: i64, guard: &Guard) -> i64 {
+    pub fn cost(&mut self, key: u64, guard: &Guard) -> i64 {
         let evict = self.evict.load(Ordering::SeqCst, guard);
         if evict.is_null() {
             return -1;
@@ -276,21 +282,21 @@ impl<T> DefaultPolicy<T> {
             }
         }
 
-     /*   let msg = self.item_ch.1.try_recv();
-        {
-            match msg {
-                Ok(r) => {
-                    let mut admit = self.admit.load(Ordering::SeqCst, guard);
-                    if admit.is_null() {
-                        return;
-                    }
-                    let admit = unsafe { admit.deref_mut() };
+        /*   let msg = self.item_ch.1.try_recv();
+           {
+               match msg {
+                   Ok(r) => {
+                       let mut admit = self.admit.load(Ordering::SeqCst, guard);
+                       if admit.is_null() {
+                           return;
+                       }
+                       let admit = unsafe { admit.deref_mut() };
 
-                    admit.push(r);
-                }
-                Err(_) => {}
-            }
-        }*/
+                       admit.push(r);
+                   }
+                   Err(_) => {}
+               }
+           }*/
     }
 }
 
@@ -408,7 +414,11 @@ impl SampledLFU {
         match self.key_costs.get(&key) {
             None => false,
             Some(v) => {
-                unsafe { self.metrics.as_mut().unwrap().add(keyUpdate, key, 1) }
+                unsafe {
+                    if !self.metrics.is_null() {
+                        self.metrics.as_mut().unwrap().add(keyUpdate, key, 1)
+                    }
+                }
                 self.used += cost - v;
                 self.key_costs.insert(key, cost);
                 true
