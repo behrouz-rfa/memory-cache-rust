@@ -4,20 +4,21 @@ use crate::policy::{DefaultPolicy, Policy};
 
 pub type RingConsumer = Box<dyn Fn(Vec<u64>) -> bool>;
 
-pub struct RingStripe {
+#[derive(Clone)]
+pub struct RingStripe<T> {
     pub data: Vec<u64>,
     pub capa: usize,
-    cons: *mut DefaultPolicy,
+    pub cons: *mut DefaultPolicy<T>,
 }
 
 
-impl RingStripe {
+impl<T> RingStripe<T> {
     fn initializer(mut self: Box<Self>) -> Box<Self> {
         // self.data = vec![0; capa];
         // self.capa = capa;
         self
     }
-    fn new(capa: usize, p: *mut DefaultPolicy) -> Self {
+    fn new(capa: usize, p: *mut DefaultPolicy<T>) -> Self {
         RingStripe {
             data: vec![0; capa],
             capa,
@@ -29,27 +30,44 @@ impl RingStripe {
         self.data.push(item);
         if self.data.len() >= self.capa {
             unsafe {
-                if self.cons.as_mut().unwrap().push(self.data.clone()) {
-                    self.data = vec![0u64; self.capa];
-                } else {
+                if let Some(cons) = self.cons.as_mut(){
+                    if cons.push(self.data.clone()) {
+                        self.data = vec![0u64; self.capa];
+                    } else {
+                        self.data = vec![];
+                    }
+                }else {
                     self.data = vec![];
                 }
+
             }
         }
     }
 }
 
-pub struct RingBuffer {
-    pool: SyncPool<RingStripe>,
+pub struct RingBuffer<T> {
+    pool: SyncPool<RingStripe<T>>,
 }
 
-impl RingBuffer {
-    pub fn new(f: *mut DefaultPolicy, capa: usize) -> Self
+impl<T> Clone  for RingBuffer<T> {
+    fn clone(& self) -> Self {
+
+        Self {
+            pool:SyncPool::with_packer(RingStripe::initializer)
+        }
+    }
+}
+
+impl<T> RingBuffer<T> {
+    pub fn new(f: *mut DefaultPolicy<T>, capa: usize) -> Self
     {
         let mut p = SyncPool::with_packer(RingStripe::initializer);
-        p.get().data = vec![0; capa];
-        p.get().capa = capa;
-        p.get().cons = f;
+        let mut g = p.get();
+        let mut g = p.get();
+        g.capa = capa;
+        g.data = vec![0; capa];
+        g.cons = f;
+        p.put(g);
         RingBuffer {
             pool: p
         }

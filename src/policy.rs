@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 use std::{ptr, thread};
+use std::marker::PhantomData;
+use std::sync::atomic::Ordering;
+use crossbeam::epoch::{Atomic, Guard, Owned};
 use parking_lot::Mutex;
 use crate::bloom::bbloom::Bloom;
 use crate::cache::{Item, ITEM_NEW, keepGets, keyUpdate, rejectSets};
@@ -35,28 +38,26 @@ pub trait Policy {
     fn clear(&self);
 }
 
-
-pub struct DefaultPolicy {
-    l: Mutex<()>,
-
-    pub admit: TinyLFU,
+#[derive(Clone)]
+pub struct DefaultPolicy<T> {
+    pub admit: Atomic<TinyLFU>,
     pub item_ch: (Sender<Vec<u64>>, Receiver<Vec<u64>>),
     pub stop: (Sender<bool>, Receiver<bool>),
-    pub evict: SampledLFU,
+    pub evict: Atomic<SampledLFU>,
     pub metrics: *mut Metrics,
+    _merker: PhantomData<T>,
 }
 
 
-impl DefaultPolicy {
+impl<T> DefaultPolicy<T> {
     pub fn new(number_counters: i64, max_cost: i64) -> Self {
         let mut p = DefaultPolicy {
-            l: Default::default(),
-
-            admit: TinyLFU::new(number_counters),
+            admit: Atomic::new(TinyLFU::new(number_counters)),
             item_ch: unbounded::<Vec<u64>>(),
             stop: unbounded::<bool>(),
-            evict: SampledLFU::new(max_cost),
+            evict: Atomic::new(SampledLFU::new(max_cost)),
             metrics: ptr::null_mut(),
+            _merker: PhantomData,
         };
 
 
@@ -69,40 +70,76 @@ impl DefaultPolicy {
         if keys.len() == 0 {
             return true;
         }
-        unsafe {
-            self.metrics.as_mut().unwrap().add(keepGets, keys[0], keys.len() as u64)
 
-        };
-        true
+
+        select! {
+            send(self.item_ch.0,keys.clone())->res =>{
+                if !self.metrics.is_null() {
+                    unsafe{self.metrics.as_mut().unwrap().add(keepGets,keys[0],keys.len() as u64)};
+                    return true;
+                }
+
+            },
+            default=>{
+              if !self.metrics.is_null() {
+                    unsafe {self.metrics.as_mut().unwrap().add(keepGets,keys[0],keys.len() as u64)};
+                    return false;
+                }
+
+            }
+        }
+        return true;
+        // unsafe {
+        //     if !self.metrics.is_null() {
+        //         self.metrics.as_mut().unwrap().add(keepGets, keys[0], keys.len() as u64)
+        //     }
+        // };
+        // true
     }
-    pub fn collect_metrics(&mut self, metrics: &mut Metrics) {
+    pub fn collect_metrics(&mut self, metrics: &mut Metrics, guard: &Guard) {
         self.metrics = metrics;
-        self.evict.metrics = metrics
+
+        let evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return;
+        }
+
+        let evict = unsafe { evict.deref() };
+        let new_table = Owned::new(SampledLFU::new(evict.max_cost));
+
+        self.evict.store(new_table, Ordering::SeqCst)
     }
-    pub fn add<T>(&mut self, key: u64, cost: i64) -> (Vec<Item<T>>, bool) {
-        let l = self.l.lock();
+    pub fn add(&mut self, key: u64, cost: i64, guard: &Guard) -> (Vec<Item<T>>, bool) {
+        let mut evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return (vec![], false);
+        }
+        let evict = unsafe { evict.deref_mut() };
 
         // can't add an item bigger than entire cache
-        if cost > self.evict.max_cost {
-            drop(l);
+        if cost > evict.max_cost {
             return (vec![], false);
         }
         // we don't need to go any further if the item is already in the cache
-        if self.evict.update_if_has(key, cost) {
-            drop(l);
+        if evict.update_if_has(key, cost) {
             return (vec![], true);
         }
-        let mut room = self.evict.room_left(cost);
+        let mut room = evict.room_left(cost);
         // if we got this far, this key doesn't exist in the cache
         //
         // calculate the remaining room in the cache (usually bytes)
         if room >= 0 {
             // there's enough room in the cache to store the new item without
             // overflowing, so we can do that now and stop here
-            self.evict.add(key, cost);
+            evict.add(key, cost);
             return (vec![], true);
         }
-        let inc_hits = self.admit.estimate(key);
+        let mut admit = self.admit.load(Ordering::SeqCst, guard);
+        if admit.is_null() {
+            return (vec![], false);
+        }
+        let admit = unsafe { admit.deref_mut() };
+        let inc_hits = admit.estimate(key);
         // sample is the eviction candidate pool to be filled via random sampling
         //
         // TODO: perhaps we should use a min heap here. Right now our time
@@ -113,16 +150,16 @@ impl DefaultPolicy {
         let mut victims = Vec::new();
 
         while room < 0 {
-            room = self.evict.room_left(cost);
+            room = evict.room_left(cost);
             // fill up empty slots in sample
-            self.evict.fill_sample(&mut sample);
+            evict.fill_sample(&mut sample);
             let mut minKey: u64 = 0;
             let mut minHits: i64 = i64::MAX;
             let mut minId: i64 = 0;
             let mut minCost: i64 = 0;
 
             for (i, pair) in sample.iter().enumerate() {
-                let hits = self.admit.estimate(pair.key);
+                let hits = admit.estimate(pair.key);
                 if hits < minHits {
                     minKey = pair.key;
                     minHits = hits;
@@ -134,7 +171,7 @@ impl DefaultPolicy {
                 unsafe { self.metrics.as_mut().unwrap().add(rejectSets, key, 1) };
                 return (victims, false);
             }
-            self.evict.del(minKey);
+            evict.del(minKey);
             sample[minId as usize] = sample[sample.len() - 1];
             victims.push(Item {
                 flag: ITEM_NEW,
@@ -144,64 +181,116 @@ impl DefaultPolicy {
                 cost: minCost,
             })
         };
-        self.evict.add(key, cost);
+        evict.add(key, cost);
         (victims, true)
     }
 
     //TODO lock
-    pub fn has(&self, key: u64) -> bool {
-        let _ = self.l.lock();
-        self.evict.key_costs.contains_key(&key)
+    pub fn has(&self, key: u64, guard: &Guard) -> bool {
+        let evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return false;
+        }
+        let evict = unsafe { evict.deref() };
+        evict.key_costs.contains_key(&key)
     }
 
-    pub fn del(&mut self, key: u64) {
-        let _ = self.l.lock();
-        self.evict.del(key);
+    pub fn del(&mut self, key: u64, guard: &Guard) {
+        let mut evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return;
+        }
+        let evict = unsafe { evict.deref_mut() };
+        evict.del(key);
         return;
     }
 
 
-    pub fn update(&mut self, key: u64, cost: i64) {
-        let _ = self.l.lock();
-        self.evict.update_if_has(key, cost);
+    pub fn update(&mut self, key: u64, cost: i64, guard: &Guard) {
+        let mut evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return;
+        }
+        let evict = unsafe { evict.deref_mut() };
+        evict.update_if_has(key, cost);
         return;
     }
 
-    pub fn Clear(&mut self) {
-        let _ = self.l.lock();
-        self.admit.clear();
-        self.evict.clear();
+    pub fn Clear(&mut self, guard: &Guard) {
+        let mut evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return;
+        }
+        let evict = unsafe { evict.deref_mut() };
+
+        let mut admit = self.admit.load(Ordering::SeqCst, guard);
+        if admit.is_null() {
+            return;
+        }
+        let admit = unsafe { admit.deref_mut() };
+        admit.clear();
+        evict.clear();
         return;
     }
 
     pub fn close(&mut self) {
         self.stop.0.send(true).expect("Chanla close");
     }
-    pub fn cost(&mut self, key: u64, cost: i64) -> i64 {
-        let _ = self.l.lock();
-        match self.evict.key_costs.get(&key) {
+    pub fn cost(&mut self, key: u64, cost: i64, guard: &Guard) -> i64 {
+        let evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return -1;
+        }
+        let evict = unsafe { evict.deref() };
+        match evict.key_costs.get(&key) {
             None => -1,
             Some(v) => *v
         }
     }
 
-    pub fn cap(&self, key: u64) -> i64 {
-        let _ = self.l.lock();
-        self.evict.max_cost - self.evict.used
+    pub fn cap(&self, key: u64, guard: &Guard) -> i64 {
+        let mut evict = self.evict.load(Ordering::SeqCst, guard);
+        if evict.is_null() {
+            return -1;
+        }
+        let evict = unsafe { evict.deref_mut() };
+        evict.max_cost - evict.used
     }
 
-    fn processItems(&mut self) {
-        let msg = self.item_ch.1.try_recv();
+    fn processItems(&mut self, guard: &Guard) {
+        loop {
+            select! {
+               recv(self.item_ch.1) -> item => {
+                    if let Ok(item) = item {
+                        let mut admit = self.admit.load(Ordering::SeqCst,guard);
+                        if admit.is_null() {
+                            return;
+                        }
+                        let admit = unsafe{admit.deref_mut()};
+                        admit.push(item)
+                    }
+               },
+                  recv(self.stop.1) -> item => {
+                    return;
+                }
+            }
+        }
+
+     /*   let msg = self.item_ch.1.try_recv();
         {
             match msg {
                 Ok(r) => {
-                    let l = self.l.lock();
-                    self.admit.push(r);
-                    drop(l);
+                    let mut admit = self.admit.load(Ordering::SeqCst, guard);
+                    if admit.is_null() {
+                        return;
+                    }
+                    let admit = unsafe { admit.deref_mut() };
+
+                    admit.push(r);
                 }
                 Err(_) => {}
             }
-        }
+        }*/
     }
 }
 
@@ -319,7 +408,7 @@ impl SampledLFU {
         match self.key_costs.get(&key) {
             None => false,
             Some(v) => {
-                unsafe{self.metrics.as_mut().unwrap().add(keyUpdate, key, 1)}
+                unsafe { self.metrics.as_mut().unwrap().add(keyUpdate, key, 1) }
                 self.used += cost - v;
                 self.key_costs.insert(key, cost);
                 true
@@ -350,14 +439,15 @@ mod tests {
 
     #[test]
     fn test_policy_metrics() {
-        let mut p = DefaultPolicy::new(100, 10);
-        p.collect_metrics(&mut Metrics::new());
-        unsafe {assert_eq!(p.metrics.as_mut().unwrap().all.len(), 256)};
+        let mut p = DefaultPolicy::<u64>::new(100, 10);
+        let guard = crossbeam::epoch::pin();
+        p.collect_metrics(&mut Metrics::new(), &guard);
+        unsafe { assert_eq!(p.metrics.as_mut().unwrap().all.len(), 256) };
     }
 
     #[test]
     fn test_policy_push() {
-        let mut p = DefaultPolicy::new(100, 10);
+        let mut p = DefaultPolicy::<u64>::new(100, 10);
         assert_eq!(p.push(vec![]), true);
 
         let mut keepCount = 0;

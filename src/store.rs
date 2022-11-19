@@ -1,53 +1,57 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+use crossbeam::epoch::{Atomic, Guard};
 use parking_lot::Mutex;
 
 
-pub trait Store<T> {
+pub trait Store<V> {
     // Get returns the value associated with the key parameter.
-    fn Get(&self, key_hash: u64, confilict_hash: u64) -> Option<&T>;
+    fn Get<'g>(&self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<&'g V>;
     // Set adds the key-value pair to the Map or updates the value if it's
 // already present.
-    fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: T);
+    fn Set(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: & Guard);
     // Del deletes the key-value pair from the Map.
-    fn Del(&mut self, key_hash: u64, confilict_hash: u64) -> Option<(u64, T)>;
+    fn Del<'g>(&mut self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<(u64, V)>;
     // Update attempts to update the key with a new value and returns true if
 // successful.
-    fn update(&mut self, key_hash: u64, confilict_hash: u64, v: T) -> bool;
+    fn update<'g>(&mut self, key_hash: u64, confilict_hash: u64, v: V, guard: &'g Guard) -> bool;
     // clear clears all contents of the store.
-    fn clear(&mut self);
+    fn clear<'g>(&mut self, guard: &'g Guard);
 }
 
-struct StoreItem<T> {
+struct StoreItem<V> {
     key: u64,
     confilict: u64,
-    value: T,
+    value: V,
 }
 
-pub struct LockeMap<T> {
-    l: Mutex<()>,
-    data: HashMap<u64, StoreItem<T>>,
+#[derive(Clone)]
+pub struct LockeMap<V> {
+    data: Atomic<HashMap<u64, StoreItem<V>>>,
 }
 
-pub struct ShardedMap<T> {
-    shared: Vec<LockeMap<T>>,
+#[derive(Clone)]
+pub struct ShardedMap<V> {
+    shared: Vec<LockeMap<V>>,
 }
 
-impl<T> LockeMap<T> {
+impl<V> LockeMap<V> {
     fn new() -> Self {
         LockeMap {
-            l: Default::default(),
-            data: HashMap::default(),
+            data: Atomic::new(HashMap::default()),
         }
     }
 }
 
-impl<T> ShardedMap<T> {
+const numShards: usize = 256;
+
+impl<V> ShardedMap<V> {
     pub(crate) fn new() -> Self {
         let mut sm = ShardedMap {
             shared: Vec::new()
         };
-        for i in 0..sm.shared.len() {
-            sm.shared[i] = LockeMap::new()
+        for i in 0..numShards {
+            sm.shared.push(LockeMap::new())
         }
         sm
     }
@@ -55,88 +59,91 @@ impl<T> ShardedMap<T> {
 
 const NUM_SHARDS: u64 = 256;
 
-impl<T> Store<T> for ShardedMap<T> {
-    fn Get(&self, key: u64, conflict: u64) -> Option<&T> {
-        self.shared[(key & NUM_SHARDS) as usize].Get(key, conflict)
+impl<V> Store<V> for ShardedMap<V> {
+    fn Get<'g>(&self, key: u64, conflict: u64, guard: &'g Guard) -> Option<&'g V> {
+        self.shared[(key & NUM_SHARDS) as usize].Get(key, conflict, guard)
     }
 
-    fn Set(&mut self, key: u64, conflict: u64, v: T) {
-        self.shared[(key & NUM_SHARDS) as usize].Set(key, conflict, v)
+    fn Set(&mut self, key: u64, conflict: u64, v: V, guard: &Guard) {
+        self.shared[(key & NUM_SHARDS) as usize].Set(key, conflict, v, guard)
     }
 
-    fn Del(&mut self, key: u64, conflict: u64) -> Option<(u64, T)> {
-        self.shared[(key & NUM_SHARDS) as usize].Del(key, conflict)
+    fn Del<'g>(&mut self, key: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
+        self.shared[(key & NUM_SHARDS) as usize].Del(key, conflict, guard)
     }
 
-    fn update(&mut self, key: u64, conflict: u64, v: T) -> bool {
-        self.shared[(key & NUM_SHARDS) as usize].update(key, conflict, v)
+    fn update<'g>(&mut self, key: u64, conflict: u64, v: V, guard: &'g Guard) -> bool {
+        self.shared[(key & NUM_SHARDS) as usize].update(key, conflict, v, guard)
     }
 
-    fn clear(&mut self) {
+    fn clear<'g>(&mut self, guard: &'g Guard) {
         for i in 0..self.shared.len() {
-            self.shared[i].clear();
+            self.shared[i].clear(guard);
         }
     }
 }
 
-impl<T> Store<T> for LockeMap<T> {
-    fn Get(&self, key_hash: u64, confilict_hash: u64) -> Option<&T> {
-        let mut l = self.l.lock();
-        match self.data.get(&key_hash) {
+impl<V> Store<V> for LockeMap<V> {
+    fn Get<'g>(&self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<&'g V> {
+        let data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            return None;
+        }
+        let data = unsafe { data.deref() };
+        match data.get(&key_hash) {
             None => None,
             Some(v) => {
                 if confilict_hash != 0 && confilict_hash != v.confilict {
-                    drop(l);
                     None
                 } else {
-                    drop(l);
                     Some(&v.value)
                 }
             }
         }
     }
 
-    fn Set(&mut self, key_hash: u64, conflict: u64, value: T) {
-        let l = self.l.lock();
-        match self.data.get(&key_hash) {
+    fn Set<'g>(&mut self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) {
+        let mut data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            return ;
+        }
+        let data = unsafe { data.deref_mut() };
+        match data.get(&key_hash) {
             None => {
-                self.data.insert(key_hash, StoreItem {
+                data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
                     value,
                 });
-                drop(l);
             }
             Some(v) if v.confilict != conflict && conflict != 0 => {
-                drop(l);
                 return;
             }
             Some(v) => {
-                self.data.insert(key_hash, StoreItem {
+               data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
                     value,
                 });
-                drop(l);
             }
         }
     }
 
-    fn Del(&mut self, key_hash: u64, conflict: u64) -> Option<(u64, T)> {
-        let mut l = self.l.lock();
-        return match self.data.get(&key_hash) {
+    fn Del<'g>(&mut self, key_hash: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
+        let mut data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            return None;
+        }
+        let data = unsafe { data.deref_mut() };
+        return match data.get(&key_hash) {
             None => {
-                drop(l);
-
                 None
             }
             Some(v) => {
                 if conflict != 0 && conflict != v.confilict {
-                    drop(l);
                     None
                 } else {
-                    let store_item = self.data.remove(&key_hash);
-                    drop(l);
+                    let store_item = data.remove(&key_hash);
                     if let Some(item) = store_item {
                         return Some((item.confilict, item.value));
                     }
@@ -146,32 +153,37 @@ impl<T> Store<T> for LockeMap<T> {
         };
     }
 
-    fn update(&mut self, key_hash: u64, conflict: u64, value: T) -> bool {
-        let l = self.l.lock();
-        match self.data.get(&key_hash) {
+    fn update<'g>(&mut self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) -> bool {
+        let mut data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            return false;
+        }
+        let data = unsafe { data.deref_mut() };
+        match data.get(&key_hash) {
             None => {
-                drop(l);
                 return false;
             }
             Some(v) if v.confilict != conflict && conflict != 0 => {
-                drop(l);
                 return false;
             }
             Some(v) => {
-                self.data.insert(key_hash, StoreItem {
+                data.insert(key_hash, StoreItem {
                     key: key_hash,
                     confilict: conflict,
                     value,
                 });
-                drop(l);
+
                 true
             }
         }
     }
 
-    fn clear(&mut self) {
-        let l = self.l.lock();
-        self.data = HashMap::new();
-        drop(l);
+    fn clear<'g>(&mut self, guard: &'g Guard) {
+        let mut data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            return ;
+        }
+        let data = unsafe { data.deref_mut() };
+        self.data = Atomic::null();
     }
 }
