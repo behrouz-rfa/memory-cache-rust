@@ -28,25 +28,35 @@ Ristretto is usable but still under active development. We expect it to be produ
 ### Example
 
 ```rust
+use memory_cache_rust::bloom::hasher::{key_to_hash, cast_mut, value_to_int};
 fn main() {
-    let mut key_to_hash_count = 0;
-    let mut cache = Cache::new(
-        Config {
-            numb_counters: 100,
-            max_cost: 10,
-            buffer_items: 64,
-            metrics: false,
-            key_to_hash: key_to_hash,
-            on_evict: None,
-            cost: None,
-        }
-    );
-
-    let guard = crossbeam::epoch::pin();
-    if cache.set("key", "value", 1, &guard) {
-        thread::sleep(Duration::from_millis(2000));
-        println!("{:?}", cache.get("key", &guard));
+  let cache = Cache::new(
+    Config {
+      numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
+      max_cost: 1 << 30,// maximum cost of cache (1GB).
+      buffer_items: 64,// number of keys per Get buffer.
+      metrics: false,
+      key_to_hash: key_to_hash,
+      on_evict: None,
+      cost: None,
     }
+  );
+
+  let guard = cache.guard();
+  cache.set("key", "value1", 1, &guard);
+  cache.set("key2", "value2", 1, &guard);
+  cache.set("key3", "value3", 1, &guard);
+  cache.set("key4", "value4", 1, &guard);
+  thread::sleep(Duration::from_millis(50));
+
+  assert_eq!(cache.get(&"key", &guard), Some("value1"));
+  assert_eq!(cache.get(&"key2", &guard), Some("value2"));
+  assert_eq!(cache.get(&"key3", &guard), Some("value3"));
+
+  cache.del("key", &guard);
+  thread::sleep(Duration::from_millis(10));
+  let v = cache.get(&"key", &guard);
+  assert_eq!(v, None);
 }
 ```
 
