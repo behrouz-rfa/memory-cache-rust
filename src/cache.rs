@@ -270,8 +270,7 @@ impl<K, V> Cache<K, V>
         let mut p = DefaultPolicy::new(c.numb_counters, c.max_cost);
         let (tx, rx) = crossbeam_channel::unbounded();
         let (stop_tx, stop_rx) = crossbeam_channel::unbounded();
-    /*    let binding = Collector::new();
-        let binding = binding.enter();*/
+
        let bf = RingBuffer::new(&mut p, c.buffer_items);
         let mut cache = Cache {
             store: ShardedMap::new(),

@@ -32,7 +32,7 @@ impl<T> RingStripe<T> {
     fn push<'g>(&'g self, item: u64,guard:&'g Guard) {
         let mut data = self.data.load(Ordering::SeqCst,guard);
         if data.is_null()  {
-            data = Shared::boxed( vec![0; self.capa],guard.collector().unwrap());
+            data = Shared::boxed( vec![],guard.collector().unwrap());
             self.data.store(data,Ordering::SeqCst);
         }
         let data = unsafe{data.as_ptr()};
@@ -42,13 +42,8 @@ impl<T> RingStripe<T> {
         if data.len() >= self.capa {
             unsafe {
                 if let Some(cons) = self.cons.as_mut() {
-                    let mut  data  = self.data.load(Ordering::SeqCst,guard);
-                    if data.is_null()  || !unsafe {data.deref()}.is_empty(){
-                        data = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
-                        self.data.store(data, Ordering::SeqCst);
-                    }
-                    let data = data.as_ptr();
-                    if cons.push(data.as_mut().unwrap().clone(),guard) {
+
+                    if cons.push(data.clone(),guard) {
                         let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
                         self.data.store(empty, Ordering::SeqCst);
 
