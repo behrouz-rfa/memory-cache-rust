@@ -2,7 +2,7 @@
 
 memory-cache is a fast, concurrent cache library built with a focus on performance and correctness.
 
-The motivation to build Ristretto comes from the need for a contention-free
+The motivation to build memory-cache comes from the need for a contention-free
 cache in [Dgraph][].
 
 [Dgraph]: https://github.com/dgraph-io/dgraph
