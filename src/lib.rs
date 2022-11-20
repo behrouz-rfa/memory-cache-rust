@@ -1,3 +1,6 @@
+extern crate core;
+
+
 use crate::cache::Metrics;
 
 pub mod tiny_lfu;

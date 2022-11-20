@@ -1,45 +1,64 @@
+use std::sync::atomic::Ordering;
 use std::vec;
+use seize::{Collector, Guard};
 use syncpool::prelude::*;
 use crate::policy::{DefaultPolicy, Policy};
+use crate::reclaim::{Atomic, Shared};
 
 pub type RingConsumer = Box<dyn Fn(Vec<u64>) -> bool>;
 
 /// ringStripe is a singular ring buffer that is not concurrent safe.
 #[derive(Clone)]
 pub struct RingStripe<T> {
-    pub data: Vec<u64>,
+     pub(crate) data: Atomic<Vec<u64>>,
     pub capa: usize,
     pub cons: *mut DefaultPolicy<T>,
+
 }
 
 
 impl<T> RingStripe<T> {
-    fn initializer(mut self: Box<Self>) -> Box<Self> {
-        // self.data = vec![0; capa];
-        // self.capa = capa;
-        self
-    }
+
     fn new(capa: usize, p: *mut DefaultPolicy<T>) -> Self {
         RingStripe {
-            data: vec![0; capa],
+            data: Atomic::null(),
             capa,
             cons: p,
+
         }
     }
     /// Push appends an item in the ring buffer and drains (copies items and
     /// sends to Consumer) if full.
-    fn push(&mut self, item: u64) {
-        self.data.push(item);
-        if self.data.len() >= self.capa {
+    fn push<'g>(&'g self, item: u64,guard:&'g Guard) {
+        let mut data = self.data.load(Ordering::SeqCst,guard);
+        if data.is_null()  {
+            data = Shared::boxed( vec![0; self.capa],guard.collector().unwrap());
+            self.data.store(data,Ordering::SeqCst);
+        }
+        let data = unsafe{data.as_ptr()};
+        let data = unsafe{data.as_mut().unwrap()};
+
+        data.push(item);
+        if data.len() >= self.capa {
             unsafe {
                 if let Some(cons) = self.cons.as_mut() {
-                    if cons.push(self.data.clone()) {
-                        self.data = vec![0u64; self.capa];
+                    let mut  data  = self.data.load(Ordering::SeqCst,guard);
+                    if data.is_null()  || !unsafe {data.deref()}.is_empty(){
+                        data = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
+                        self.data.store(data, Ordering::SeqCst);
+                    }
+                    let data = data.as_ptr();
+                    if cons.push(data.as_mut().unwrap().clone(),guard) {
+                        let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
+                        self.data.store(empty, Ordering::SeqCst);
+
                     } else {
-                        self.data = vec![];
+                        let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
+                        self.data.store(empty, Ordering::SeqCst);
                     }
                 } else {
-                    self.data = vec![];
+                    let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
+                    self.data.store(empty, Ordering::SeqCst);
                 }
             }
         }
@@ -51,17 +70,19 @@ impl<T> RingStripe<T> {
 ///
 /// This implements the "batching" process described in the BP-Wrapper paper
 /// (section III part A).
+#[derive(Clone)]
 pub struct RingBuffer<T> {
-    pool: SyncPool<RingStripe<T>>,
+    pool: RingStripe<T>,
 }
-
-impl<T> Clone for RingBuffer<T> {
-    fn clone(&self) -> Self {
-        Self {
-            pool: SyncPool::with_packer(RingStripe::initializer)
-        }
-    }
-}
+//
+// impl<'g,T> Clone for RingBuffer<'g,T> {
+//     fn clone(&self) -> Self {
+//         Self {
+//             pool:self.pool,
+//             guard: self.guard
+//         }
+//     }
+// }
 
 impl<T> RingBuffer<T> {
     /// newRingBuffer returns a striped ring buffer. The Consumer in ringConfig will
@@ -74,23 +95,17 @@ impl<T> RingBuffer<T> {
         // percentage of elements lost. The performance primarily comes from
         // low-level runtime functions used in the standard library that aren't
         // available to us (such as runtime_procPin()).
-        let mut p = SyncPool::with_packer(RingStripe::initializer);
-        let mut g = p.get();
-        let mut g = p.get();
-        g.capa = capa;
-        g.data = vec![0; capa];
-        g.cons = f;
-        p.put(g);
+
         RingBuffer {
-            pool: p
+            pool: RingStripe::new(capa,f),
         }
     }
     /// Push adds an element to one of the internal stripes and possibly drains if
     /// the stripe becomes full.
-    pub fn push(&mut self, item: u64) {
-        let mut g = self.pool.get();
-        g.push(item);
-        self.pool.put(g);
+    pub fn push<'g>(&'g self, item: u64, guard: &'g Guard) {
+
+        self.pool.push(item,guard);
+        // self.pool.put(g);
     }
 }
 

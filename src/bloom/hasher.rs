@@ -4,18 +4,20 @@ use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
 use xxhash_rust::xxh3::xxh3_64;
 
 use std::mem::size_of;
+use std::ops::Deref;
 
 
 pub type KeyHash<T> = Box<dyn FnMut(T) -> (u64, i64)>;
 
-pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 
+
+pub fn key_to_hash<T: Copy + 'static + std::fmt::Display>(key: & T) -> (u64, u64)
+    where
 
 {
-
+    let key = *key.deref();
     if equals::<T, String>() {
-
-        let v =    cast_ref::<_, String>(&key).unwrap();
+        let v = cast_ref::<_, String>(&key).unwrap();
         let raw = v.as_bytes();
         return (mem_hash(raw), const_xxh3(raw) as u64);
     }
@@ -29,51 +31,61 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 
 
     if equals::<T, u64>() {
-        let value =    cast_ref::<_,u64>(&key).unwrap();
+        let value = cast_ref::<_, u64>(&key).unwrap();
         return (*value, 0);
     }
 
     if equals::<T, usize>() {
-        let value =    cast_ref::<_,usize>(&key).unwrap();
+        let value = cast_ref::<_, usize>(&key).unwrap();
         return (*value as u64, 0);
     }
 
 
     if equals::<T, i64>() {
-        let value =    cast_ref::<_,i64>(&key).unwrap();
+        let value = cast_ref::<_, i64>(&key).unwrap();
         return (*value as u64, 0);
     }
 
 
     if equals::<T, i32>() {
-        let value =    cast_ref::<_,i32>(&key).unwrap();
+        let value = cast_ref::<_, i32>(&key).unwrap();
 
         return (*value as u64, 0);
     }
 
     if equals::<T, u8>() {
-        let value =    cast_ref::<_,u8>(&key).unwrap();
+        let value = cast_ref::<_, u8>(&key).unwrap();
         return (*value as u64, 0);
     }
     if equals::<T, u16>() {
-        let value =    cast_ref::<_,u16>(&key).unwrap();
+        let value = cast_ref::<_, u16>(&key).unwrap();
 
         return (*value as u64, 0);
     }
     if equals::<T, u32>() {
-        let value =    cast_ref::<_,u32>(&key).unwrap();
+        let value = cast_ref::<_, u32>(&key).unwrap();
 
         return (*value as u64, 0);
     }
     if equals::<T, i16>() {
-        let value =    cast_ref::<_,i16>(&key).unwrap();
+        let value = cast_ref::<_, i16>(&key).unwrap();
 
         return (*value as u64, 0);
     }
 
-    let v =    cast_ref::<_, String>(&key).unwrap();
-    let raw = v.as_bytes();
-    return (mem_hash(raw), const_xxh3(raw) as u64);
+    let f = format!("{}",key);
+
+    match cast_ref::<_, String>(&f) {
+        None => {
+            panic!("not suported");
+        }
+        Some(v) => {
+            let raw = v.as_bytes();
+            return (mem_hash(raw), const_xxh3(raw) as u64);
+        }
+    }
+
+
     // panic!("! Key type not supported")
 
 
@@ -85,47 +97,46 @@ pub fn key_to_hash<T : Copy +'static >(key: T) -> (u64, u64)
 }
 
 
-
-pub fn value_to_int<T :'static>(key: T) -> i64 {
+pub fn value_to_int<T: 'static>(key: T) -> i64 {
     if equals::<T, u64>() {
-        let value =    cast_ref::<_,u64>(&key).unwrap();
+        let value = cast_ref::<_, u64>(&key).unwrap();
         return *value as i64;
     }
 
     if equals::<T, usize>() {
-        let value =    cast_ref::<_,usize>(&key).unwrap();
-        return *value  as i64;
+        let value = cast_ref::<_, usize>(&key).unwrap();
+        return *value as i64;
     }
 
 
     if equals::<T, i64>() {
-        let value =    cast_ref::<_,i64>(&key).unwrap();
-        return *value  as i64;
+        let value = cast_ref::<_, i64>(&key).unwrap();
+        return *value as i64;
     }
 
 
     if equals::<T, i32>() {
-        let value =    cast_ref::<_,i32>(&key).unwrap();
+        let value = cast_ref::<_, i32>(&key).unwrap();
 
-        return  *value as i64;
+        return *value as i64;
     }
 
     if equals::<T, u8>() {
-        let value =    cast_ref::<_,u8>(&key).unwrap();
+        let value = cast_ref::<_, u8>(&key).unwrap();
         return *value as i64;
     }
     if equals::<T, u16>() {
-        let value =    cast_ref::<_,u16>(&key).unwrap();
+        let value = cast_ref::<_, u16>(&key).unwrap();
 
         return *value as i64;
     }
     if equals::<T, u32>() {
-        let value =    cast_ref::<_,u32>(&key).unwrap();
+        let value = cast_ref::<_, u32>(&key).unwrap();
 
         return *value as i64;
     }
     if equals::<T, i16>() {
-        let value =    cast_ref::<_,i16>(&key).unwrap();
+        let value = cast_ref::<_, i16>(&key).unwrap();
 
         return *value as i64;
     }
@@ -149,5 +160,18 @@ pub fn cast_mut<U: 'static, V: 'static>(u: &mut U) -> Option<&mut V> {
         Some(unsafe { std::mem::transmute::<&mut U, &mut V>(u) })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash() {
+        let a ="22";
+        let d = key_to_hash(&a);
+        ;
+        println!("{:?}", d);
     }
 }
