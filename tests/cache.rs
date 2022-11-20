@@ -56,6 +56,8 @@ fn test_cache_concurrent() {
     let t1 = thread::spawn(move || {
         let guard = c1.guard();
         c1.set("key", "value1", 1, &guard);
+        c1.set("key2", "value2", 1, &guard);
+        c1.set("key3", "value3", 1, &guard);
     ;
     });
     let c2 = Arc::clone(&arc);
@@ -63,14 +65,14 @@ fn test_cache_concurrent() {
         let guard = c2.guard();
         thread::sleep(Duration::from_millis(200));
         println!("222222222{:?}", c2.get(&"key", &guard));
-        // assert_eq!(c2.get(&"key", &guard), Some("value1"));
-        // assert_eq!(c2.get(&"key2", &guard), Some("value2"));
-        // assert_eq!(c2.get(&"key3", &guard), Some("value3"));
-        // c2.set("key4", "value4", 1, &guard);
-        // c2.del("key",&guard);
-        // thread::sleep(Duration::from_millis(10));
-        // let v = c2.get(&"key", &guard);
-        // assert_eq!(v, None);
+        assert_eq!(c2.get(&"key", &guard), Some("value1"));
+        assert_eq!(c2.get(&"key2", &guard), Some("value2"));
+        assert_eq!(c2.get(&"key3", &guard), Some("value3"));
+        c2.set("key4", "value4", 1, &guard);
+        c2.del("key",&guard);
+        thread::sleep(Duration::from_millis(10));
+        let v = c2.get(&"key", &guard);
+        assert_eq!(v, None);
     });
 
 
