@@ -582,7 +582,7 @@ mod tests {
         cache.set("key", "value", 1, &guard);
         thread::sleep(Duration::from_millis(10));
         let v = cache.get(&"key", &guard);
-        assert_eq!(v, Some(&"value"));
+        assert_eq!(v, Some("value"));
 
         cache.del("key",&guard);
         thread::sleep(Duration::from_millis(10));

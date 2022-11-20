@@ -14,7 +14,7 @@ cache in [Dgraph][].
     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
 * **Fast Throughput** - we use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
-* **Fully Concurrent** - you can use as many goroutines as you want with little throughput degradation.
+* **Fully Concurrent** - you can use as many treads as you want with little throughput degradation.
 * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
 * **Simple API** - just figure out your ideal `Config` values and you're off and running.
 
@@ -94,7 +94,7 @@ OnEvict is called for every eviction.
 
 **KeyToHash** `func(key interface{}) [2]uint64`
 
-KeyToHash is the hashing algorithm used for every key. If this is nil, Ristretto has a variety of [defaults depending on the underlying interface type](https://github.com/dgraph-io/ristretto/blob/master/z/z.go#L19-L41).
+KeyToHash is the hashing algorithm used for every key. If this is nil,
 
 Note that if you want 128bit hashes you should use the full `[2]uint64`,
 otherwise just fill the `uint64` at the `0` position and it will behave like
