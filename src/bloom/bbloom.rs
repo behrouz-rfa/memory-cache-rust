@@ -147,7 +147,7 @@ impl Bloom {
         //     return false;
         // }
         unsafe {
-            let step = (idx >> 6) /*+ ((idx % 64) >> 3))*/;
+            let step = idx >> 6 /*+ ((idx % 64) >> 3))*/;
             ptr = ptr.wrapping_offset(step as isize);
         }
 
@@ -199,7 +199,7 @@ fn getSize(mut u_i64: u64) -> (u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    use std::ptr::hash;
+
     use std::collections::HashMap;
     use rand::{Rng, RngCore, SeedableRng};
     use rand::rngs::StdRng;

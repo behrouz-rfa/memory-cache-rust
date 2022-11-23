@@ -30,7 +30,7 @@ Ristretto is usable but still under active development. We expect it to be produ
 ```rust
 use memory_cache_rust::bloom::hasher::{key_to_hash, cast_mut, value_to_int};
 fn main() {
-  let cache = Cache::new(
+  let cache = Cache::with_config(
     Config {
       numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
       max_cost: 1 << 30,// maximum cost of cache (1GB).

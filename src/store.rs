@@ -1,270 +1,218 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::{Duration, Instant};
+
 
 use parking_lot::Mutex;
 use seize::{Collector, Guard, Linked};
-use crate::reclaim::{Atomic, Shared};
+use crate::cache::{Item, ItemFlag, NUM_SHARDS, PutResult};
+use crate::reclaim;
+use crate::reclaim::{Atomic, CompareExchangeError, Shared};
+use crate::ttl::ExpirationMap;
 
-/// store is the interface fulfilled by all hash map implementations in this
-/// file. Some hash map implementations are better suited for certain data
-/// distributions than others, so this allows us to abstract that out for use
-/// in Ristretto.
-///
-/// Every store is safe for concurrent usage.
-pub trait Store<V> {
-    // Get returns the value associated with the key parameter.
-    fn Get<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard<'_>) -> Option< V>;
-    // Set adds the key-value pair to the Map or updates the value if it's
-    // already present.
-    fn Set<'g>(&'g self, key_hash: u64, confilict_hash: u64, v: V, guard: &'g Guard);
-    // Del deletes the key-value pair from the Map.
-    fn Del<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard) -> Option<(u64, V)>;
-    // Update attempts to update the key with a new value and returns true if
-    // successful.
-    fn update<'g>(&'g self, key_hash: u64, confilict_hash: u64, v: V, guard: &'g Guard) -> bool;
-    // clear clears all contents of the store.
-    fn clear<'g>(&'g self, guard: &'g Guard);
+pub struct Node<V> {
+    pub key: u64,
+    pub conflict: u64,
+    pub(crate) value: Atomic<V>,
+    pub expiration: Option<Duration>,
+
 }
 
-pub struct StoreItem<V> {
-    key: u64,
-    confilict: u64,
-    value: V,
-}
-
-#[derive(Clone)]
-pub struct LockeMap<V> where V: Clone{
-    data: Atomic<HashMap<u64, StoreItem<V>>>,
-}
-
-impl<V:Clone> LockeMap<V> {
-    pub(crate) fn init_map<'g>(&self, guard: &'g Guard) -> Shared<'g, HashMap<u64, StoreItem<V>>> {
-        loop {
-            let mut table = self.data.load(Ordering::SeqCst, guard);
-            if !table.is_null() && !unsafe { table.deref() }.is_empty() {
-                break table;
-            }
-
-            table = Shared::boxed(HashMap::new(), guard.collector().unwrap());
-            self.data.store(table, Ordering::SeqCst);
-
-            break table;
+impl<V> Node<V> {
+    pub(crate) fn new<AV>(key: u64, conflict: u64, value: AV, expiration: Option<Duration>) -> Self
+        where AV: Into<Atomic<V>>,
+    {
+        Node {
+            key,
+            conflict,
+            value: value.into(),
+            expiration,
         }
     }
 }
 
-#[derive(Clone)]
-pub struct ShardedMap<V:Clone> {
-    shared: Vec<LockeMap<V>>,
-}
-
-impl<V> LockeMap<V> where V: Clone{
-    fn new() -> Self {
-        LockeMap {
-            data: Atomic::null(),
+impl<V> Clone for Node<V> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            conflict: self.conflict,
+            value:self.value.clone(),
+            expiration: self.expiration
         }
     }
 }
 
-const NUM_SHARDS: u64 = 256;
+pub(crate) struct Store<V> {
+    pub data: Vec<HashMap<u64, Node<V>>>,
+    em: ExpirationMap,
+    lock: Mutex<()>,
+}
 
-impl<V:Clone> ShardedMap<V> {
-    /// newStore returns the default store implementation.
-    pub(crate) fn new() -> Self {
-        let mut sm = ShardedMap {
-            shared: Vec::new()
-        };
+
+impl<V> Store<V> {
+    pub fn new() -> Self {
+        Self::from(Vec::with_capacity(NUM_SHARDS))
+    }
+    pub fn from(mut data: Vec<HashMap<u64, Node<V>>>) -> Self {
         for i in 0..NUM_SHARDS {
-            sm.shared.push(LockeMap::new())
+            data.push(HashMap::new());
         }
-        sm
-    }
-}
 
-
-impl<V:Clone> Store<V> for ShardedMap<V> {
-    fn Get<'g>(&self, key: u64, conflict: u64, guard: &'g Guard<'_>) -> Option< V> {
-        self.shared[(key % NUM_SHARDS) as usize].Get(key, conflict, guard)
-    }
-
-    fn Set<'g>(&'g self, key: u64, conflict: u64, v: V, guard: &'g Guard<'_>) {
-        eprintln!("256 key {}", key % NUM_SHARDS);
-        self.shared[(key % NUM_SHARDS) as usize].Set(key, conflict, v, guard)
-    }
-
-    fn Del<'g>(&'g self, key: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
-        self.shared[(key % NUM_SHARDS) as usize].Del(key, conflict, guard)
-    }
-
-    fn update<'g>(&'g self, key: u64, conflict: u64, v: V, guard: &'g Guard) -> bool {
-        self.shared[(key % NUM_SHARDS) as usize].update(key, conflict, v, guard)
-    }
-
-    fn clear<'g>(&'g self, guard: &'g Guard) {
-        for i in 0..self.shared.len() {
-            self.shared[i].clear(guard);
+        Self {
+            data: data,
+            em: ExpirationMap::new(),
+            lock: Default::default(),
         }
     }
-}
+    pub(crate) fn clear<'g>(&'g self, guard: &'g Guard) {
+        // self.data
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
 
-impl<V:Clone> Store<V> for LockeMap<V> {
-    fn Get<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard<'_>) -> Option<V> {
-        let data = self.data.load(Ordering::SeqCst, guard);
 
-        if data.is_null() {
-            return None;
-        }
-        let data = unsafe { data.as_ref() };
+    pub(crate) fn bini(&self, hash: u64) -> usize {
+        (hash % NUM_SHARDS as u64) as usize
+    }
 
-        return match data.unwrap().get(&key_hash) {
+
+ /*   pub(crate) fn bin<'g>(&'g self, i: usize, guard: &'g Guard<'_>) -> Shared<'g, HashMap<u64, Node<V>>> {
+        self.data[i].load(Ordering::Acquire, guard)
+    }
+
+
+    pub(crate) fn cas_bin<'g>(
+        &'g self,
+        i: usize,
+        current: Shared<'_, HashMap<u64, Node<V>>>,
+        new: Shared<'g, HashMap<u64, Node<V>>>,
+        guard: &'g Guard<'_>,
+    ) -> Result<Shared<'g, HashMap<u64, Node<V>>>, reclaim::CompareExchangeError<'g, HashMap<u64, Node<V>>>> {
+        self.data[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire, guard)
+    }*/
+    pub(crate) fn expiration<'g>(&'g mut self, key: &u64, guard: &'g Guard<'_>) -> Option<Duration> {
+        let index = self.bini(*key);
+
+        return match   self.data[index].get(key) {
             None => None,
             Some(v) => {
-                if confilict_hash != 0 && confilict_hash != v.confilict {
+                v.expiration
+            }
+        };
+    }
+
+    pub fn get<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard<'_>) -> Option<&'g V> {
+        let index = self.bini(key_hash);
+
+
+
+        return match self.data[index].get(&key_hash) {
+            None => None,
+            Some(v) => {
+                if confilict_hash != 0 && confilict_hash != v.conflict {
+                    return None;
+                }
+                let now = Instant::now();
+                if v.expiration.is_some() && v.expiration.unwrap().as_millis() > now.elapsed().as_millis() {
                     None
                 } else {
-                    Some(v.value.clone())
+                    let v = v.value.load(Ordering::SeqCst, guard);
+                    assert!(!v.is_null());
+                    return Some((unsafe { v.as_ref().unwrap().deref() }));
                 }
             }
         };
     }
 
-    fn Set<'g>(&'g self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) {
-        let mut table = self.data.load(Ordering::SeqCst, guard);
-        loop {
-            if table.is_null() || unsafe { table.deref() }.is_empty() {
-                table = self.init_map(guard);
-            }
-            let mut data = unsafe { table.as_ptr() };
-            unsafe {
-                match data.as_ref() {
-                    None => {
-                        todo!();
-                        return;
-                    }
-                    Some(_) => {
-                        let data = data.as_mut().unwrap();
-                        match data.get(&key_hash) {
-                            None => {
-                                data.insert(key_hash, StoreItem {
-                                    key: key_hash,
-                                    confilict: conflict,
-                                    value,
-                                });
-                                eprintln!("data {}", data.len());
-                                return;
-                            }
-                            Some(v) if v.confilict != conflict && conflict != 0 => {
-                                return;
-                            }
-                            Some(v) => {
-                                data.insert(key_hash, StoreItem {
-                                    key: key_hash,
-                                    confilict: conflict,
-                                    value,
-                                });
-                                eprintln!("data {}", data.len());
-                                return;
-                            }
-                        }
-                    }
+    pub(crate) fn set<'g>(&'g mut self, item: Node<V>, guard: &'g Guard<'_>) {
+        let lock = self.lock.lock();
+
+
+
+
+        let index = self.bini(item.key);
+
+        match self.data[index].get(&item.key) {
+            None => {
+                if item.expiration.is_some() {
+                    self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
                 }
+                self.data[index].insert(item.key,item);
+               drop(lock);
+                return;
+            }
+            Some(v) if v.conflict != item.conflict && item.conflict != 0 => {
+                drop(lock);
+                return;
+            }
+            Some(v) => {
+                if v.expiration.is_some() {
+                    self.em.update(item.key, item.conflict, v.expiration.unwrap(), item.expiration.unwrap(), guard);
+                }
+
+                self.data[index].insert(item.key,item);
+                drop(lock);
+                return;
             }
         }
+        drop(lock);
+        return;
     }
 
-    fn Del<'g>(&'g self, key_hash: u64, conflict: u64, guard: &'g Guard) -> Option<(u64, V)> {
-        let mut table = self.data.load(Ordering::SeqCst, guard);
-        loop {
-            if table.is_null() || unsafe { table.deref() }.is_empty() {
-                table = self.init_map(guard);
-                continue;
+    pub(crate) fn update<'g>(&'g mut self, item: Item<V>, guard: &'g Guard<'_>) -> bool {
+        let index = self.bini(item.key);
+
+
+        return match self.data[index].get_mut(&item.key) {
+            None => {
+                false
             }
-
-
-            let mut data = unsafe { table.as_ptr() };
-            unsafe {
-                match data.as_ref() {
-                    None => {
-                        todo!();
-                        return None;
-                    }
-                    Some(_) => {
-                        let data = data.as_mut().unwrap();
-                        match data.get(&key_hash) {
-                            None => {
-                                return None;
-                            }
-                            Some(v) => {
-                                if conflict != 0 && conflict != v.confilict {
-                                    return None;
-                                } else {
-                                    let store_item = data.remove(&key_hash);
-                                    if let Some(item) = store_item {
-                                        return Some((item.confilict, item.value));
-                                    }
-                                    return None;
-                                }
-                            }
-                        }
-                    }
+            Some(v) if v.conflict != item.conflict && item.conflict != 0 => {
+                false
+            }
+            Some(v) => {
+                if v.expiration.is_some() {
+                    //todo
+                    self.em.update(item.key, item.conflict, v.expiration.unwrap(), item.expiration.unwrap(), guard);
                 }
+                self.data[index].insert(item.key, Node {
+                    key: item.key,
+                    conflict: item.conflict,
+                    value: item.value,
+                    expiration: item.expiration,
+
+                });
+
+                true
             }
-        }
+        };
     }
 
-    fn update<'g>(&'g self, key_hash: u64, conflict: u64, value: V, guard: &'g Guard) -> bool {
-        let mut table = self.data.load(Ordering::SeqCst, guard);
-        loop {
-            if table.is_null() || unsafe { table.deref() }.is_empty() {
-                table = self.init_map(guard);
-                return false;
+    pub(crate) fn del<'g>(&'g mut self, key_hash: &u64, conflict: &u64, guard: &'g Guard<'_>) -> Option<(u64, &'g V)> {
+        let index = self.bini(*key_hash);
+
+
+        return match self.data[index].get_mut(key_hash) {
+            None => {
+                None
             }
-
-
-            let mut data = unsafe { table.as_ptr() };
-            unsafe {
-                match data.as_ref() {
-                    None => {
-                        todo!();
-                        return false;
-                    }
-                    Some(_) => {
-                        let data = data.as_mut().unwrap();
-                        return match data.get(&key_hash) {
-                            None => {
-                                false
-                            }
-                            Some(v) if v.confilict != conflict && conflict != 0 => {
-                                false
-                            }
-                            Some(v) => {
-                                data.insert(key_hash, StoreItem {
-                                    key: key_hash,
-                                    confilict: conflict,
-                                    value,
-                                });
-
-                                true
-                            }
-                        };
-                    }
+            Some(v) if v.conflict != *conflict && *conflict != 0 => {
+                None
+            }
+            Some(v) => {
+                self.em.del(&v.key, v.expiration.unwrap(), guard);
+                if let Some(item) = self.data[index].remove(key_hash) {
+                    let v = item.value.load(Ordering::SeqCst, guard);
+                    assert!(!v.is_null());
+                    return Some((item.conflict, unsafe { v.as_ref().unwrap().deref() }));
                 }
+                None
             }
-        }
-    }
-
-    fn clear<'g>(&'g self, guard: &'g Guard) {
-        let mut table = self.data.load(Ordering::SeqCst, guard);
-
-        if table.is_null() || unsafe { table.deref() }.is_empty() {
-            table = self.init_map(guard);
-            return;
-            ;
-        }
-        let mut data = unsafe { table.as_ptr() };
-        let data = unsafe { data.as_mut().unwrap() };
-        data.clear();
-        // data
-        // self.data = Atomic::null();
+        };
     }
 }
+
+

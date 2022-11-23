@@ -1,188 +1,135 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
-use memory_cache_rust::bloom::hasher::{key_to_hash, cast_mut, value_to_int};
-use memory_cache_rust::cache::{Cache, Config, Item, ITEM_DELETE, ITEM_NEW, ITEM_UPDATE};
-use memory_cache_rust::store::Store;
+use crossbeam::epoch::{Atomic, Shared};
+
+use memory_cache_rust::bloom::haskey::key_to_hash;
+
+use rayon;
+use rayon::prelude::*;
+use memory_cache_rust::cache::{Cache, Item};
+use memory_cache_rust::cache::ItemFlag::ItemUpdate;
+
+const ITER: u64 = 32 * 1024;
 
 #[test]
-fn test_cache() {
+fn test_cache_key_to_hash() {
     let mut key_to_hash_count = 0;
-    let cache = Cache::new(
-        Config {
-            numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
-            max_cost: 1 << 30,// maximum cost of cache (1GB).
-            buffer_items: 64,// number of keys per Get buffer.
-            metrics: false,
-            key_to_hash: key_to_hash,
-            on_evict: None,
-            cost: None,
-        }
-    );
+    let mut cache = Cache::new();
 
     let guard = cache.guard();
-    cache.set("key", "value1", 1, &guard);
-    cache.set("key2", "value2", 1, &guard);
-    cache.set("key3", "value3", 1, &guard);
-    cache.set("key4", "value4", 1, &guard);
-    thread::sleep(Duration::from_millis(50));
-
-    assert_eq!(cache.get(&"key", &guard), Some("value1"));
-    assert_eq!(cache.get(&"key2", &guard), Some("value2"));
-    assert_eq!(cache.get(&"key3", &guard), Some("value3"));
-
-    cache.del("key", &guard);
-    thread::sleep(Duration::from_millis(10));
-    let v = cache.get(&"key", &guard);
-    assert_eq!(v, None);
+    cache.set(1, 2, 1, &guard);
+    cache.set(2, 2, 1, &guard);
+    println!("{:?}", cache.get(&1, &guard));
+    println!("{:?}", cache.get(&2, &guard));
 }
 
 #[test]
-fn test_cache_concurrent() {
+fn test_cache_key_to_hash_thread() {
     let mut key_to_hash_count = 0;
-    let cache = Cache::new(
-        Config {
-            numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
-            max_cost: 1 << 30,// maximum cost of cache (1GB).
-            buffer_items: 64,// number of keys per Get buffer.
-            metrics: false,
-            key_to_hash: key_to_hash,
-            on_evict: None,
-            cost: None,
-        }
-    );
-    let arc = Arc::new(cache);
-    let c1 = Arc::clone(&arc);
+    let mut cache = Cache::new();
+
+    let arcc = Arc::new(cache);
+    let c1 = Arc::clone(&arcc);
+    let c2 = Arc::clone(&arcc);
+    let c3 = Arc::clone(&arcc);
+
     let t1 = thread::spawn(move || {
         let guard = c1.guard();
-        c1.set("key", "value1", 1, &guard);
-        c1.set("key2", "value2", 1, &guard);
-        c1.set("key3", "value3", 1, &guard);
-    ;
-    });
-    let c2 = Arc::clone(&arc);
-    let t2 = thread::spawn(move || {
-        let guard = c2.guard();
-        thread::sleep(Duration::from_millis(200));
-        println!("222222222{:?}", c2.get(&"key", &guard));
-        assert_eq!(c2.get(&"key", &guard), Some("value1"));
-        assert_eq!(c2.get(&"key2", &guard), Some("value2"));
-        assert_eq!(c2.get(&"key3", &guard), Some("value3"));
-        c2.set("key4", "value4", 1, &guard);
-        c2.del("key",&guard);
-        thread::sleep(Duration::from_millis(10));
-        let v = c2.get(&"key", &guard);
-        assert_eq!(v, None);
+        for i in 0..100000 {
+            c1.set(i, i + 7, 1, &guard);
+        }
     });
 
+    let t2 = thread::spawn(move || {
+        let guard = c2.guard();
+        for i in 0..100000 {
+            c2.set(i, i + 7, 1, &guard);
+        }
+    });
+
+    let t3 = thread::spawn(move || {
+        let guard = c3.guard();
+        for i in 0..100000 {
+            c3.set(i, i + 7, 1, &guard);
+        }
+    });
+    let c41 = Arc::clone(&arcc);
+    let t4 = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1000));
+        let guard = c41.guard();
+        for i in 0..300 {
+            println!("{:?}", c41.get(&i, &guard))
+        }
+    });
 
     t1.join();
     t2.join();
+    t3.join();
+    t4.join();
+    let c4 = Arc::clone(&arcc);
+    let guard = c4.guard();
+    c4.set(1, 2, 1, &guard);
+    c4.set(2, 2, 1, &guard);
+    println!("{:?}", c4.get(&1, &guard));
+    println!("{:?}", c4.get(&2, &guard));
 }
 
-fn evicted(key: u64, conflict: u64, value: i64, cost: i64) {
-    println!("evicted")
+
+#[test]
+fn test_cache_with_ttl2() {
+    let mut key_to_hash_count = 0;
+    let cache = Cache::new();
+
+    (0..ITER).into_par_iter().for_each(|i| {
+        let guard = cache.guard();
+        cache.set(i, i + 7, 1, &guard);
+    });
 }
 
 #[test]
-fn test_cache_process_items() {
+fn test_cache_with_ttl() {
     let mut key_to_hash_count = 0;
-    let mut cache = Cache::new(
-        Config {
-            numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
-            max_cost: 1 << 30,// maximum cost of cache (1GB).
-            buffer_items: 64,// number of keys per Get buffer.
-            metrics: false,
-            key_to_hash: key_to_hash,
-            on_evict: Some(evicted),
-            cost: Some(value_to_int),
-        }
-    );
+    let cache = Cache::new();
 
     let guard = cache.guard();
 
-    let mut key = 0;
-    let mut conflict = 0;
+    let key = 1;
+    let value = 1;
+    let cost = 1;
+    let ttl = Duration::from_millis(0);
+
+    loop {
+        if !cache.set_with_ttl(1, 1, 1, Duration::from_millis(0), &guard) {
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        thread::sleep(Duration::from_millis(50));
+        match cache.get(&key, &guard) {
+            None => {
+                assert!(false)
+            }
+            Some(v) => {
+                assert_eq!(v, &value)
+            }
+        }
+        break;
+    }
 
 
-    (key, conflict) = key_to_hash(&1);
-    cache.process_items(Item {
-        flag: ITEM_NEW,
-        key,
-        conflict,
-        value: Some(1),
-        cost: 0,
-    }, &guard);
-
-    thread::sleep(Duration::from_millis(100));
-    assert_eq!(cache.policy.has(key, &guard), true);
-    assert_eq!(cache.policy.cost(key, &guard), 1);
-
-    (key, conflict) = key_to_hash(&1);
-
-    cache.process_items(Item {
-        flag: ITEM_UPDATE,
-        key,
-        conflict,
-        value: Some(2),
-        cost: 0,
-    }, &guard);
-    thread::sleep(Duration::from_millis(100));
-    assert_eq!(cache.policy.cost(key, &guard), 2);
-
-    (key, conflict) = key_to_hash(&1);
-    cache.process_items(Item {
-        flag: ITEM_DELETE,
-        key,
-        conflict,
-        value: None,
-        cost: 0,
-    }, &guard);
-
-    thread::sleep(Duration::from_millis(100));
-    (key, conflict) = key_to_hash(&1);
-    let v = cache.store.Get(key, conflict, &guard);
-    assert_eq!(v, None);
-    assert_eq!(cache.policy.has(key, &guard), false);
+    cache.set(1, 2, 2, &guard);
 
 
-    (key, conflict) = key_to_hash(&2);
-    cache.process_items(Item {
-        flag: ITEM_NEW,
-        key,
-        conflict,
-        value: Some(2),
-        cost: 3,
-    }, &guard);
 
-    (key, conflict) = key_to_hash(&3);
-    cache.process_items(Item {
-        flag: ITEM_NEW,
-        key,
-        conflict,
-        value: Some(2),
-        cost: 3,
-    }, &guard);
-    thread::sleep(Duration::from_millis(100));
-    (key, conflict) = key_to_hash(&4);
-    cache.process_items(Item {
-        flag: ITEM_NEW,
-        key,
-        conflict,
-        value: Some(3),
-        cost: 3,
-    }, &guard);
-    thread::sleep(Duration::from_millis(100));
-    (key, conflict) = key_to_hash(&5);
-    cache.process_items(Item {
-        flag: ITEM_NEW,
-        key,
-        conflict,
-        value: Some(3),
-        cost: 5,
-    }, &guard);
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(10));
 
-    println!("{:?}", cache.get(&2, &guard));
-    cache.set(1, 1, 1, &guard);
+    for i in 0..1000 {
+
+        cache.set_with_ttl(i,i+2,1,Duration::from_millis(20000000),&guard);
+    }
+    thread::sleep(Duration::from_millis(50));
+    let v = cache.set(2, 2, 1, &guard);
+    assert_eq!(v, true);
+
 }

@@ -1,14 +1,28 @@
-extern crate core;
 
 
-use crate::cache::Metrics;
+use serde::de::Unexpected::Char;
+use crate::cache::Cache;
 
-pub mod tiny_lfu;
 pub mod bloom;
-pub mod cache;
-pub mod store;
-pub mod policy;
-pub mod cmsketch;
-pub mod ring;
+mod store;
 mod reclaim;
+mod ttl;
+pub mod cache;
+mod policy;
+mod cmsketch;
+mod ring;
 
+/// Default hasher for [`HashMap`].
+pub type DefaultHashBuilder = ahash::RandomState;
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+
+    }
+}

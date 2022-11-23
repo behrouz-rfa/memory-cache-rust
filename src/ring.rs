@@ -10,49 +10,50 @@ pub type RingConsumer = Box<dyn Fn(Vec<u64>) -> bool>;
 /// ringStripe is a singular ring buffer that is not concurrent safe.
 #[derive(Clone)]
 pub struct RingStripe<T> {
-     pub(crate) data: Atomic<Vec<u64>>,
+    pub(crate) data: Atomic<Vec<u64>>,
     pub capa: usize,
-    pub cons: *mut DefaultPolicy<T>,
+    pub(crate)  cons: Atomic<DefaultPolicy<T>>,
 
 }
 
 
 impl<T> RingStripe<T> {
-
-    fn new(capa: usize, p: *mut DefaultPolicy<T>) -> Self {
+    fn new(capa: usize, p: Shared<DefaultPolicy<T>>) -> Self {
         RingStripe {
             data: Atomic::null(),
             capa,
-            cons: p,
+            cons: Atomic::from(p),
 
         }
     }
     /// Push appends an item in the ring buffer and drains (copies items and
     /// sends to Consumer) if full.
-    fn push<'g>(&'g self, item: u64,guard:&'g Guard) {
-        let mut data = self.data.load(Ordering::SeqCst,guard);
-        if data.is_null()  {
-            data = Shared::boxed( vec![],guard.collector().unwrap());
-            self.data.store(data,Ordering::SeqCst);
+    fn push<'g>(&'g self, item: u64, guard: &'g Guard) {
+        let mut data = self.data.load(Ordering::SeqCst, guard);
+        if data.is_null() {
+            data = Shared::boxed(vec![0; self.capa], guard.collector().unwrap());
+            self.data.store(data, Ordering::SeqCst);
         }
-        let data = unsafe{data.as_ptr()};
-        let data = unsafe{data.as_mut().unwrap()};
+        let data = unsafe { data.as_ptr() };
+        let data = unsafe { data.as_mut().unwrap() };
 
         data.push(item);
         if data.len() >= self.capa {
             unsafe {
-                if let Some(cons) = self.cons.as_mut() {
-
-                    if cons.push(data.clone(),guard) {
-                        let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
-                        self.data.store(empty, Ordering::SeqCst);
-
-                    } else {
-                        let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
-                        self.data.store(empty, Ordering::SeqCst);
-                    }
+                let p = self.cons.load(Ordering::SeqCst, guard);
+                let p = unsafe {p.as_ptr()};
+                let p = unsafe {p.as_mut().unwrap()};
+                let mut data = self.data.load(Ordering::SeqCst, guard);
+                if data.is_null() || !unsafe { data.deref() }.is_empty() {
+                    data = Shared::boxed(Vec::with_capacity(self.capa), guard.collector().unwrap());
+                    self.data.store(data, Ordering::SeqCst);
+                }
+                let data = data.as_ptr();
+                if p.push(data.as_mut().unwrap().clone(), guard) {
+                    let empty = Shared::boxed(vec![0; self.capa], guard.collector().unwrap());
+                    self.data.store(empty, Ordering::SeqCst);
                 } else {
-                    let empty = Shared::boxed(vec![0;self.capa], guard.collector().unwrap());
+                    let empty = Shared::boxed(vec![0; self.capa], guard.collector().unwrap());
                     self.data.store(empty, Ordering::SeqCst);
                 }
             }
@@ -82,7 +83,7 @@ pub struct RingBuffer<T> {
 impl<T> RingBuffer<T> {
     /// newRingBuffer returns a striped ring buffer. The Consumer in ringConfig will
     /// be called when individual stripes are full and need to drain their elements.
-    pub fn new(f: *mut DefaultPolicy<T>, capa: usize) -> Self
+    pub(crate)  fn new(f: Shared<DefaultPolicy<T>>, capa: usize) -> Self
     {
         // LOSSY buffers use a very simple sync.Pool for concurrently reusing
         // stripes. We do lose some stripes due to GC (unheld items in sync.Pool
@@ -92,14 +93,13 @@ impl<T> RingBuffer<T> {
         // available to us (such as runtime_procPin()).
 
         RingBuffer {
-            pool: RingStripe::new(capa,f),
+            pool: RingStripe::new(capa, f),
         }
     }
     /// Push adds an element to one of the internal stripes and possibly drains if
     /// the stripe becomes full.
     pub fn push<'g>(&'g self, item: u64, guard: &'g Guard) {
-
-        self.pool.push(item,guard);
+        self.pool.push(item, guard);
         // self.pool.put(g);
     }
 }
