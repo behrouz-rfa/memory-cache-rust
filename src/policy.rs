@@ -441,7 +441,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use seize::Collector;
     use crate::cache::{doNotUse, Metrics};
-    use crate::policy::DefaultPolicy;
+    use crate::policy::{DefaultPolicy, SampledLFU};
     use crate::reclaim::{Atomic, Shared};
 
     #[test]
@@ -550,6 +550,125 @@ mod tests {
         p.add(1, 2, &guard);
 
         assert_eq!(p.evict.key_costs.get(&1),Some(&2));
+
+    }
+
+    #[test]
+    fn test_policy_cost() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+
+        p.add(1, 1, &guard);
+
+
+        assert_eq!(p.cost(&1,&guard),1);
+        assert_eq!(p.cost(&2,&guard),-1);
+
+    }
+
+
+    #[test]
+    fn test_policy_clear() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+
+        p.add(1, 1, &guard);
+        p.add(2, 2, &guard);
+        p.add(3, 3, &guard);
+        p.clear(&guard);
+
+
+        assert_eq!(p.has(1,&guard),false);
+        assert_eq!(p.has(2,&guard),false);
+        assert_eq!(p.has(2,&guard),false);
+
+
+    }
+    #[test]
+    fn test_lfu_add(){
+
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+
+        let mut lfu = SampledLFU::new(4,shard_metric);
+        lfu.add(1, 1);
+        lfu.add(2, 2);
+        lfu.add(3, 1);
+        assert_eq!(lfu.used,4);
+        assert_eq!(lfu.key_costs.get(&2),Some(&2));
+    }
+
+    #[test]
+    fn test_lfu_del(){
+
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+
+        let mut lfu = SampledLFU::new(4,shard_metric);
+        lfu.add(1, 1);
+        lfu.add(2, 2);
+        lfu.del(&2);
+        assert_eq!(lfu.used,1);
+        assert_eq!(lfu.key_costs.get(&2),None);
+    }
+
+
+    #[test]
+    fn test_lfu_update(){
+
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+
+        let mut lfu = SampledLFU::new(4,shard_metric);
+        lfu.add(1, 1);
+
+        assert_eq!( lfu.update_if_has(1,2,&guard),true);
+        assert_eq!(lfu.used,2);
+        assert_eq!( lfu.update_if_has(2,2,&guard),false);
+    }
+
+    #[test]
+    fn test_lfu_clear(){
+
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+
+        let mut lfu = SampledLFU::new(4,shard_metric);
+        lfu.add(1, 1);
+        lfu.add(2, 2);
+        lfu.add(3, 3);
+        lfu.clear();
+
+        assert_eq!(lfu.used,0);
+        assert_eq!(lfu.key_costs.len(),0);
 
     }
 }
