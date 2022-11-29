@@ -133,37 +133,29 @@ impl ExpirationMap {
         }
     }
 
-    pub(crate) fn cleanup<'g, V>(&'g self, store: &mut Store<V>, policy: &mut DefaultPolicy<V>, f: Option<OnEvict<&V>>, guard: &'g Guard) {
+    pub(crate) fn cleanup<'g, V>(&'g self, policy: &mut DefaultPolicy<V>, f: Option<OnEvict<&V>>, guard: &'g Guard) -> HashMap<u64,u64>{
         let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+        let mut items_in_store = HashMap::new();
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {
-                return;
+                break items_in_store;
             }
 
             let buckets = unsafe { buckets.as_ptr() };
-            let buckets = unsafe { buckets.as_mut().unwrap() };
+            let keys = unsafe { buckets.as_mut().unwrap() };
 
             let d = time::SystemTime::now();
             let now = d.elapsed().unwrap();
             let bucket_num = self.storage_bucket(now);
-            match buckets.get_mut(&bucket_num) {
-                None => {}
+            match keys.get_mut(&bucket_num) {
+                None => {
+                    break items_in_store;
+                }
                 Some(maps) => {
                     for (key, confilct) in &*maps {
-                        match store.expiration(key, guard) {
-                            None => { continue; }
-                            Some(v) => {
-                                let cost = policy.cost(key, guard);
-                                policy.del(key, guard);
-                               let value = store.del(key,confilct,guard);
-                                if  f.is_some(){
-                                    //ToDO for evict
-                                    // f.unwrap()(*key,*confilct,value.unwrap().1,cost)
-                                }
-
-                            }
-                        }
+                        items_in_store.insert(*key,*confilct);
                     }
+                    break items_in_store;
                 }
             }
         }

@@ -28,38 +28,38 @@ fn test_cache_key_to_hash() {
 #[test]
 fn test_cache_key_to_hash_thread() {
     let mut key_to_hash_count = 0;
-    let mut cache = Cache::new();
 
-    let arcc = Arc::new(cache);
-    let c1 = Arc::clone(&arcc);
-    let c2 = Arc::clone(&arcc);
-    let c3 = Arc::clone(&arcc);
+
+    let cache = Arc::new(Cache::new());
+    let c1 = Arc::clone(&cache);
+    let c2 = Arc::clone(&cache);
+    let c3 = Arc::clone(&cache);
 
     let t1 = thread::spawn(move || {
         let guard = c1.guard();
-        for i in 0..100 {
+        for i in 0..ITER {
             c1.set(i, i + 7, 1, &guard);
         }
     });
 
     let t2 = thread::spawn(move || {
         let guard = c2.guard();
-        for i in 0..100 {
+        for i in 0..ITER {
             c2.set(i, i + 7, 1, &guard);
         }
     });
 
     let t3 = thread::spawn(move || {
         let guard = c3.guard();
-        for i in 0..100 {
+        for i in 0..ITER {
             c3.set(i, i + 7, 1, &guard);
         }
     });
-    let c41 = Arc::clone(&arcc);
+    let c41 = Arc::clone(&cache);
     let t4 = thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
         let guard = c41.guard();
-        for i in 0..300 {
+        for i in 0..ITER {
             println!("{:?}", c41.get(&i, &guard))
         }
     });
@@ -68,7 +68,7 @@ fn test_cache_key_to_hash_thread() {
     t2.join();
     t3.join();
     t4.join();
-    let c4 = Arc::clone(&arcc);
+    let c4 = Arc::clone(&cache);
     let guard = c4.guard();
     c4.set(1, 2, 1, &guard);
     c4.set(2, 2, 1, &guard);
@@ -92,6 +92,9 @@ fn test_cache_with_ttl2() {
 fn test_cache_with_ttl() {
     let mut key_to_hash_count = 0;
     let cache = Cache::new();
+
+    let timer = timer::Timer::new();
+
 
     let guard = cache.guard();
 
@@ -118,18 +121,28 @@ fn test_cache_with_ttl() {
     }
 
 
-    cache.set(1, 2, 2, &guard);
+    let cache = Arc::new(Cache::new());
+    let c1 = Arc::clone(&cache);
 
 
+    let t1 = thread::spawn(move || {
+        let guard = c1.guard();
+        for i in 0..ITER {
+            c1.set_with_ttl(i, i, 1, Duration::from_millis(1000), &guard);
+        }
+    });
 
-    thread::sleep(Duration::from_millis(10));
+    let g = {
+        let c2 = Arc::clone(&cache);
+        timer.schedule_repeating(chrono::Duration::milliseconds(2000), move || {
+            let guard = c2.guard();
+            c2.clean_up(&guard)
+        })
+    };
 
-    for i in 0..1000 {
-
-        cache.set_with_ttl(i,i+2,1,Duration::from_millis(20000000),&guard);
+    thread::sleep(std::time::Duration::from_secs(5));
+    drop(g);
+    for i in 0..ITER {
+        assert_eq!(cache.get(&i,&guard),None)
     }
-    thread::sleep(Duration::from_millis(50));
-    let v = cache.set(2, 2, 1, &guard);
-    assert_eq!(v, true);
-
 }

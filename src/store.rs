@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use seize::{Collector, Guard, Linked};
 use crate::cache::{Item, ItemFlag, NUM_SHARDS, PutResult};
+use crate::policy::DefaultPolicy;
 use crate::reclaim;
 use crate::reclaim::{Atomic, CompareExchangeError, Shared};
 use crate::ttl::ExpirationMap;
@@ -238,6 +239,26 @@ impl<V> Store<V> {
             }
         };
     }
+
+    pub(crate) fn clean_up<'g>(&'g mut self, policy: &mut DefaultPolicy<V>, guard: &'g Guard<'_>) {
+        let maps = self.em.cleanup(policy, None, guard);
+        for (key, conflict) in maps {
+            match self.expiration(&key,
+                                  guard) {
+                None => { continue; }
+                Some(v) => {
+                    let cost = policy.cost(&key, guard);
+                    policy.del(&key, guard);
+                    let value = self.del(&key, &conflict, guard);
+                    //ToDO for evict
+                    // if f.is_some(){
+                    // //ToDO for evict
+                    // // f.unwrap()(*key,*confilct,value.unwrap().1,cost)
+                    // }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -379,8 +400,6 @@ mod tests {
         let v = s.get(1, 0, &guard);
         assert_eq!(v, Some(&1));
     }
-
-
 }
 
 

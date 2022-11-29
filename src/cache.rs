@@ -137,6 +137,8 @@ pub struct Cache<K, V, S = crate::DefaultHashBuilder> {
     pub max_cost: i64,
 
     pub(crate) metrics: Atomic<Metrics>,
+
+
 }
 
 impl<K, V, S> Debug for Cache<K, V, S> {
@@ -172,6 +174,7 @@ impl<K, V, S> Clone for Cache<K, V, S>
             buffer_items: self.buffer_items,
             max_cost: self.max_cost,
             metrics: Atomic::from(self.metrics.load(Ordering::SeqCst, &self.guard())),
+
         }
     }
 }
@@ -181,7 +184,7 @@ impl<K, V> Cache<K, V, crate::DefaultHashBuilder> {
         Self::default()
     }
 
-    pub fn with_config(c: Config<K,V>) -> Self {
+    pub fn with_config(c: Config<K, V>) -> Self {
         Self::with_hasher(crate::DefaultHashBuilder::default(), c)
     }
 }
@@ -216,6 +219,7 @@ impl<K, V, S> Cache<K, V, S>
             numb_counters: c.numb_counters,
             max_cost: c.max_cost,
             metrics: Atomic::null(),
+
         };
 
         c
@@ -446,7 +450,7 @@ impl<V, K, S> Cache<K, V, S>
         if buf.is_null() {
             return None;
         }
-        unsafe{ buf.deref() }.push(key_hash,guard);
+        unsafe { buf.deref() }.push(key_hash, guard);
 
         let mut store = self.store.load(Ordering::SeqCst, guard);
 
@@ -687,7 +691,7 @@ impl<V, K, S> Cache<K, V, S>
         }
         if !store.is_null() {
             unsafe {
-                let  p = store.as_ptr();
+                let p = store.as_ptr();
                 p.as_mut().unwrap().clear(guard);
             };
         }
@@ -794,6 +798,15 @@ impl<V, K, S> Cache<K, V, S>
                 }
             }
         }
+    }
+
+
+    pub fn clean_up<'g>(&'g self, guard: &'g Guard<'_>) {
+        self.check_guard(guard);
+        let store = self.store.load(Ordering::SeqCst, guard);
+        let policy = self.policy.load(Ordering::SeqCst, guard);
+        if store.is_null() || policy.is_null() {}
+        unsafe { store.as_ptr().as_mut().unwrap() }.clean_up(unsafe { policy.as_ptr().as_mut().unwrap() }, guard)
     }
 }
 
@@ -948,7 +961,7 @@ mod tests {
             thread::sleep(Duration::from_millis(1000));
             let guard = c41.guard();
             for i in 0..300 {
-               println!("{:?}", c41.get(&i, &guard))
+                println!("{:?}", c41.get(&i, &guard))
             }
         });
 
@@ -1048,7 +1061,7 @@ mod tests {
         let thread: Vec<_> = (0..10).map(|_| {
             let map1 = map.clone();
             thread::spawn(move || {
-               let guard = map1.guard();
+                let guard = map1.guard();
                 let s = map1.store.load(Ordering::SeqCst, &guard);
                 if s.is_null() {
                     panic!("store is null");
