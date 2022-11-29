@@ -37,21 +37,21 @@ fn test_cache_key_to_hash_thread() {
 
     let t1 = thread::spawn(move || {
         let guard = c1.guard();
-        for i in 0..100000 {
+        for i in 0..100 {
             c1.set(i, i + 7, 1, &guard);
         }
     });
 
     let t2 = thread::spawn(move || {
         let guard = c2.guard();
-        for i in 0..100000 {
+        for i in 0..100 {
             c2.set(i, i + 7, 1, &guard);
         }
     });
 
     let t3 = thread::spawn(move || {
         let guard = c3.guard();
-        for i in 0..100000 {
+        for i in 0..100 {
             c3.set(i, i + 7, 1, &guard);
         }
     });

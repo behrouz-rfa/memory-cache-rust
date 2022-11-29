@@ -29,6 +29,7 @@ fn calc_size_by_wrong_positives(num_entries: f64, wrongs: f64) -> (u64, u64) {
 }
 
 impl Bloom {
+    ///  returns a new bloom filter.
     pub fn new(num_entries: f64, wrongs: f64) -> Self {
         let mut entries = 0;
         let mut locs = 0;
@@ -70,7 +71,7 @@ impl Bloom {
         let l = hash << self.shift >> self.shift;
 
         for i in 0..self.set_locs {
-            self.set((h + i * l) & self.size);
+            self.set((h + (i * l)) & self.size);
             self.elem_num += 1;
         };
     }
@@ -96,36 +97,18 @@ impl Bloom {
         let mut ptr: *mut i64 = self.bitset.as_mut_ptr();
         unsafe {
             let step = idx >> 6;//((idx >> 6) + ((idx % 64) >> 3));
-            if step >= self.bitset.len() as u64 {
-                // println!("invalid index {}",step);
-                return;
-            }
-            if step == 0 {
-                println!("step == 0")
-            }
             ptr = ptr.wrapping_offset(step as isize);
-
-            // let x = (idx >> 6) + ((idx % 64) >> 3);
-            // let v = (idx >> 6);
-            // let c = ((idx % 64) >> 3);
-            // println!("x  {}", x);
-            // println!("v  {}", v);
-            // println!("c  {}", c);
-
 
             *ptr |= MASK[(idx % 8) as usize] as i64;
         };
-        // // ptr = unsafe {*ptr.add(step )};
-        // unsafe {println!("{:?}",MASK[(idx % 8) as usize])};
-        // unsafe {println!("{:?}",*ptr )};
-        // unsafe { *ptr |= MASK[(idx % 8) as usize] as i64; }
 
-        /*  let mut ptr = self.bitset[(idx >> 6) as usize] + ((idx % 64) >> 3) as i64;
-          ptr as i64 |= MASK[(idx & 8) as usize];*/
     }
     /// Size makes Bloom filter with as bitset of size sz.
     pub fn size(&mut self, sz: u64) {
-        self.bitset = vec![0i64; (sz >> 6) as usize]
+        self.bitset = Vec::with_capacity((sz >> 6) as usize); // vec![0i64; (sz >> 6) as usize]
+        for i in 0..(sz >> 6) as usize {
+            self.bitset.insert(i, 0)
+        }
     }
     /// Has checks if bit(s) for entry hash is/are set,
     /// returns true if the hash was added to the Bloom Filter.
@@ -184,10 +167,10 @@ pub struct BloomJsonExport {
 
 
 fn getSize(mut u_i64: u64) -> (u64, u64) {
-    let mut exponent = 0;
     if u_i64 < 512 {
         u_i64 = 512;
     }
+    let mut exponent = 0;
     let mut size = 1;
     while size < u_i64 {
         size <<= 1;
@@ -199,10 +182,11 @@ fn getSize(mut u_i64: u64) -> (u64, u64) {
 
 #[cfg(test)]
 mod tests {
-
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+    use std::hash::Hash;
     use rand::{Rng, RngCore, SeedableRng};
     use rand::rngs::StdRng;
+    use uuid::Uuid;
     use crate::bloom::rutil::{Memhash, mem_hash, mem_hash_byte};
     use super::*;
 
@@ -210,16 +194,17 @@ mod tests {
 
 
     fn worldlist() -> Vec<Vec<u8>> {
-        let seed = [0u8; 32];
-        let mut rng: StdRng = SeedableRng::from_seed(seed);
+        let seed = [0u8; 16];
+        // let mut rng: StdRng = SeedableRng::from_seed(seed);
 
-        let mut wordlist = vec![vec![]];
-        for i in 0..wordlist.len() {
-            let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
-            let v = rand::thread_rng().gen::<[u8; 32]>();
+        let mut wordlist = Vec::with_capacity(N);
+        for i in 0..wordlist.capacity() {
+            // let mut bytes = [0u8; 32];
+            let uuid = Uuid::new_v4();
+            // rng.fill_bytes(&mut bytes);
+            // let v = rand::thread_rng().gen::<[u8; 32]>();
 
-            wordlist.push(Vec::from(bytes));
+            wordlist.push(Vec::from(uuid.as_bytes().map(|v| v)));
         }
         wordlist
     }
@@ -228,21 +213,37 @@ mod tests {
     fn test_number_of_wrong() {
         let mut bf = Bloom::new((N * 10) as f64, 7.0);
         let mut cnt = 0;
-       let word_list = worldlist();
-         // bf.add_if_not_has(1147594788350054766);
-         for i in 0..word_list.len() {
-             let hash = mem_hash(&*word_list[i]);
+        let word_list = worldlist();
+        let mut set = HashSet::new();
+        // bf.add_if_not_has(1147594788350054766);
+        for i in 0..word_list.len() {
+            let hash = mem_hash(&*word_list[i]);
+            set.insert(hash);
+            if !bf.add_if_not_has(hash.into()) {
+                cnt += 1;
+            }
+        }
 
-             if !bf.add_if_not_has(hash.into()) {
-                 cnt += 1;
-             }
-         }
+        assert_eq!(set.len(), word_list.len());
 
         println!("Bloomfilter New(7* 2**16, 7) \
             (-> size={} bit): \n    \
             Check for 'false positives': {}\
              wrong positive 'Has' results on 2**16 entries => {} %%\n",
                  bf.bitset.len() << 6, cnt, (cnt) as f64 / (N) as f64)
+    }
+
+    #[test]
+    fn test_has() {
+        let mut bf = Bloom::new((N * 10) as f64, 7.0);
+
+        let v = bf.has(18272025040905874063);
+        assert_eq!(v, false);
+
+        let v = bf.has(18272025040905874063);
+        bf.add_if_not_has(18272025040905874063);
+        let v = bf.has(18272025040905874063);
+        assert_eq!(v, true)
     }
 
     #[test]

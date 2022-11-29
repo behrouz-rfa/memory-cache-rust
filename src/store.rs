@@ -38,8 +38,8 @@ impl<V> Clone for Node<V> {
         Self {
             key: self.key,
             conflict: self.conflict,
-            value:self.value.clone(),
-            expiration: self.expiration
+            value: self.value.clone(),
+            expiration: self.expiration,
         }
     }
 }
@@ -66,8 +66,11 @@ impl<V> Store<V> {
             lock: Default::default(),
         }
     }
-    pub(crate) fn clear<'g>(&'g self, guard: &'g Guard) {
-        // self.data
+    pub(crate) fn clear<'g>(&'g mut self, guard: &'g Guard) {
+        self.data = Vec::with_capacity(NUM_SHARDS);
+        for i in 0..NUM_SHARDS {
+            self.data.push(HashMap::new());
+        }
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.data.is_empty()
@@ -79,24 +82,24 @@ impl<V> Store<V> {
     }
 
 
- /*   pub(crate) fn bin<'g>(&'g self, i: usize, guard: &'g Guard<'_>) -> Shared<'g, HashMap<u64, Node<V>>> {
-        self.data[i].load(Ordering::Acquire, guard)
-    }
+    /*   pub(crate) fn bin<'g>(&'g self, i: usize, guard: &'g Guard<'_>) -> Shared<'g, HashMap<u64, Node<V>>> {
+           self.data[i].load(Ordering::Acquire, guard)
+       }
 
 
-    pub(crate) fn cas_bin<'g>(
-        &'g self,
-        i: usize,
-        current: Shared<'_, HashMap<u64, Node<V>>>,
-        new: Shared<'g, HashMap<u64, Node<V>>>,
-        guard: &'g Guard<'_>,
-    ) -> Result<Shared<'g, HashMap<u64, Node<V>>>, reclaim::CompareExchangeError<'g, HashMap<u64, Node<V>>>> {
-        self.data[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire, guard)
-    }*/
+       pub(crate) fn cas_bin<'g>(
+           &'g self,
+           i: usize,
+           current: Shared<'_, HashMap<u64, Node<V>>>,
+           new: Shared<'g, HashMap<u64, Node<V>>>,
+           guard: &'g Guard<'_>,
+       ) -> Result<Shared<'g, HashMap<u64, Node<V>>>, reclaim::CompareExchangeError<'g, HashMap<u64, Node<V>>>> {
+           self.data[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire, guard)
+       }*/
     pub(crate) fn expiration<'g>(&'g mut self, key: &u64, guard: &'g Guard<'_>) -> Option<Duration> {
         let index = self.bini(*key);
 
-        return match   self.data[index].get(key) {
+        return match self.data[index].get(key) {
             None => None,
             Some(v) => {
                 v.expiration
@@ -106,7 +109,6 @@ impl<V> Store<V> {
 
     pub fn get<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard<'_>) -> Option<&'g V> {
         let index = self.bini(key_hash);
-
 
 
         return match self.data[index].get(&key_hash) {
@@ -131,8 +133,6 @@ impl<V> Store<V> {
         let lock = self.lock.lock();
 
 
-
-
         let index = self.bini(item.key);
 
         match self.data[index].get(&item.key) {
@@ -140,8 +140,8 @@ impl<V> Store<V> {
                 if item.expiration.is_some() {
                     self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
                 }
-                self.data[index].insert(item.key,item);
-               drop(lock);
+                self.data[index].insert(item.key, item);
+                drop(lock);
                 return;
             }
             Some(v) if v.conflict != item.conflict && item.conflict != 0 => {
@@ -153,7 +153,7 @@ impl<V> Store<V> {
                     self.em.update(item.key, item.conflict, v.expiration.unwrap(), item.expiration.unwrap(), guard);
                 }
 
-                self.data[index].insert(item.key,item);
+                self.data[index].insert(item.key, item);
                 drop(lock);
                 return;
             }
@@ -203,7 +203,9 @@ impl<V> Store<V> {
                 None
             }
             Some(v) => {
-                self.em.del(&v.key, v.expiration.unwrap(), guard);
+                if v.expiration.is_some() {
+                    self.em.del(&v.key, v.expiration.unwrap(), guard);
+                }
                 if let Some(item) = self.data[index].remove(key_hash) {
                     let v = item.value.load(Ordering::SeqCst, guard);
                     assert!(!v.is_null());
@@ -212,6 +214,147 @@ impl<V> Store<V> {
                 None
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use seize::Collector;
+    use crate::bloom::haskey::key_to_hash;
+    use crate::cache::Item;
+    use crate::cache::ItemFlag::ItemNew;
+    use crate::reclaim::{Atomic, Shared};
+    use crate::store::{Node, Store};
+
+    #[test]
+    fn test_set_get() {
+        let collector = Collector::new();
+        let guard = collector.enter();
+        let mut s = Store::new();
+
+        for i in 0..20 {
+            let (key, confilict) = key_to_hash(&i);
+            let value = Shared::boxed(i + 2, &collector);
+            let node = Node::new(key, confilict, value, None);
+
+            s.set(node, &guard);
+            let v = s.get(key, confilict, &guard);
+            assert_eq!(v, Some(&(i + 2)))
+        }
+    }
+
+    #[test]
+    fn test_set_del() {
+        let collector = Collector::new();
+        let guard = collector.enter();
+        let mut s = Store::new();
+
+        for i in 0..20 {
+            let (key, confilict) = key_to_hash(&i);
+            let value = Shared::boxed(i + 2, &collector);
+            let node = Node::new(key, confilict, value, None);
+
+            s.set(node, &guard);
+            let d = s.del(&key, &confilict, &guard);
+            assert_eq!(d.unwrap().1, &(i + 2));
+
+            let v = s.get(key, confilict, &guard);
+            assert_eq!(v, None);
+        }
+    }
+
+
+    #[test]
+    fn test_set_clear() {
+        let collector = Collector::new();
+        let guard = collector.enter();
+        let mut s = Store::new();
+
+        for i in 0..20 {
+            let (key, confilict) = key_to_hash(&i);
+            let value = Shared::boxed(i + 2, &collector);
+            let node = Node::new(key, confilict, value, None);
+
+            s.set(node, &guard);
+        }
+        s.clear(&guard);
+
+        for i in 0..20 {
+            let (key, confilict) = key_to_hash(&i);
+            let v = s.get(key, confilict, &guard);
+            assert_eq!(v, None)
+        }
+    }
+
+    #[test]
+    fn test_set_update() {
+        let collector = Collector::new();
+        let guard = collector.enter();
+        let mut s = Store::new();
+
+        for i in 0..20 {
+            let (key, confilict) = key_to_hash(&i);
+            let value = Shared::boxed(i + 2, &collector);
+            let node = Node::new(key, confilict, value, None);
+
+            s.set(node, &guard);
+            let v = s.get(key, confilict, &guard);
+            assert_eq!(v, Some(&(i + 2)))
+        }
+
+        for i in 0..20 {
+            let (key, conflict) = key_to_hash(&i);
+            let value = Shared::boxed(i + 4, &collector);
+            let item = Item {
+                flag: ItemNew,
+                key: key,
+                conflict: conflict,
+                value: value.into(),
+                cost: 0,
+                expiration: None,
+            };
+            s.update(item, &guard);
+            let v = s.get(key, conflict, &guard);
+            assert_eq!(v, Some(&(i + 4)))
+        }
+    }
+
+    #[test]
+    fn test_set_collision() {
+        let collector = Collector::new();
+        let guard = collector.enter();
+        let mut s = Store::new();
+        let value = Shared::boxed(1, &collector);
+
+        let node = Node::new(1, 0, value, None);
+        s.data.get_mut(1).unwrap().insert(1, node);
+        let v = s.get(1, 1, &guard);
+        assert_eq!(v, None);
+
+
+        let value = Shared::boxed(2, &collector);
+        let node = Node::new(1, 1, value, None);
+        s.set(node, &guard);
+        let v = s.get(1, 0, &guard);
+        assert_ne!(v, Some(&2));
+        let item = Item {
+            flag: ItemNew,
+            key: 1,
+            conflict: 1,
+            value: value.into(),
+            cost: 0,
+            expiration: None,
+        };
+        assert_eq!(s.update(item, &guard), false);
+
+        s.del(&1, &1, &guard);
+        let v = s.get(1, 0, &guard);
+        assert_eq!(v, Some(&1));
+    }
+
+    #[test]
+    fn test_set_get_thread() {
+
     }
 }
 

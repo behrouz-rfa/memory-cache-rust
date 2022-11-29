@@ -686,7 +686,10 @@ impl<V, K, S> Cache<K, V, S>
             }
         }
         if !store.is_null() {
-            unsafe { store.deref() }.clear(guard);
+            unsafe {
+                let  p = store.as_ptr();
+                p.as_mut().unwrap().clear(guard);
+            };
         }
         if !metrics.is_null() {
             unsafe { metrics.deref() }.clear(guard);
