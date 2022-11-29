@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,6 +50,29 @@ pub(crate) struct Store<V> {
     lock: Mutex<()>,
 }
 
+impl<V> Clone for Store<V> {
+    fn clone(&self) -> Self {
+        let mut store = Store::new();
+        for map in &self.data {
+            store.data.push(map.clone())
+        }
+        store
+    }
+}
+
+impl<V> Deref for Store<V> {
+    type Target = ();
+
+    fn deref(&self) -> &Self::Target {
+        todo!()
+    }
+}
+
+impl<V> DerefMut for Store<V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
 
 impl<V> Store<V> {
     pub fn new() -> Self {
@@ -219,12 +242,17 @@ impl<V> Store<V> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::thread;
     use seize::Collector;
     use crate::bloom::haskey::key_to_hash;
     use crate::cache::Item;
     use crate::cache::ItemFlag::ItemNew;
     use crate::reclaim::{Atomic, Shared};
     use crate::store::{Node, Store};
+
+    const ITER: u64 = 32 * 1024;
 
     #[test]
     fn test_set_get() {
@@ -352,10 +380,7 @@ mod tests {
         assert_eq!(v, Some(&1));
     }
 
-    #[test]
-    fn test_set_get_thread() {
 
-    }
 }
 
 

@@ -893,6 +893,7 @@ mod tests {
 
     use rayon;
     use rayon::prelude::*;
+    use crate::bloom::haskey::key_to_hash;
     use crate::cache::{Cache, Config, Item, NUM_SHARDS};
     use crate::cache::ItemFlag::ItemUpdate;
     use crate::reclaim::{Atomic, Shared};
@@ -1038,5 +1039,29 @@ mod tests {
         let metrics = cache.metrics.load(Ordering::SeqCst, &guard);
         assert_eq!(metrics.is_null(), false);
         unsafe { assert_eq!(unsafe { metrics.deref() }.SetsDropped(&guard), 0) }
+    }
+
+    #[test]
+    fn test_sotre_set_get_thread() {
+        let map = Arc::new(Cache::<u64, u64>::new());
+
+        let thread: Vec<_> = (0..10).map(|_| {
+            let map1 = map.clone();
+            thread::spawn(move || {
+               let guard = map1.guard();
+                let s = map1.store.load(Ordering::SeqCst, &guard);
+                if s.is_null() {
+                    panic!("store is null");
+                }
+                for i in 0..ITER {
+                    let (key, confilict) = key_to_hash(&i);
+                    let value = Shared::boxed(i + 2, &map1.collector);
+                    let node = Node::new(key, confilict, value, None);
+                    unsafe { s.as_ptr().as_mut().unwrap().set(node, &guard) };
+                    let v = unsafe { s.deref() }.get(key, confilict, &guard);
+                    assert_eq!(v, Some(&(i + 2)))
+                }
+            })
+        }).collect();
     }
 }
