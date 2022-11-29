@@ -243,7 +243,7 @@ impl<T> DefaultPolicy<T> {
         }
     }
 
-    pub fn cap(&self, key: u64, guard: &Guard) -> i64 {
+    pub fn cap(&self) -> i64 {
         self.evict.max_cost - self.evict.used
     }
 
@@ -496,5 +496,60 @@ mod tests {
         let v = p.add(4, 20, &guard);
         assert_eq!(v.0.len(), 0);
         assert_eq!(v.1, false);
+    }
+
+
+    #[test]
+    fn test_policy_del() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(1000, 100, shard_metric);
+
+        p.add(1, 1, &guard);
+        p.del(&1,&guard);
+        p.del(&2,&guard);
+
+        assert_eq!(p.has(1,&guard),false);
+        assert_eq!(p.has(2,&guard),false);
+    }
+    #[test]
+    fn test_policy_cap() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+
+        p.add(1, 1, &guard);
+
+        assert_eq!(p.cap(),9);
+
+    }
+
+
+    #[test]
+    fn test_policy_update() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+
+        p.add(1, 1, &guard);
+        p.add(1, 2, &guard);
+
+        assert_eq!(p.evict.key_costs.get(&1),Some(&2));
+
     }
 }
