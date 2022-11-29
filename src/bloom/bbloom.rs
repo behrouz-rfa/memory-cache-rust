@@ -23,8 +23,9 @@ pub struct Bloom {
 }
 
 fn calc_size_by_wrong_positives(num_entries: f64, wrongs: f64) -> (u64, u64) {
-    let size = -1.0 * num_entries * wrongs.log10() / 0.69314718056_f64.powf(2.0);
-    let locs = unsafe { (0.69314718056_f64 * size / num_entries).ceil() };
+
+    let size = -1.0 * num_entries * wrongs.ln() / 0.69314718056_f64.powf(2.0);
+    let locs = (0.69314718056_f64 * size / num_entries).ceil() ;
     return (size as u64, locs as u64);
 }
 
@@ -33,7 +34,7 @@ impl Bloom {
     pub fn new(num_entries: f64, wrongs: f64) -> Self {
         let mut entries = 0;
         let mut locs = 0;
-        if num_entries < 1.0 {
+        if wrongs < 1.0 {
             let (e, l) = calc_size_by_wrong_positives(num_entries, wrongs);
             entries = e;
             locs = l;

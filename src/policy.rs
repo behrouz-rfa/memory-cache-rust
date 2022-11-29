@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ptr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use parking_lot::Mutex;
 use seize::Guard;
 use crate::bloom::bbloom::Bloom;
-use crate::cache::{costAdd, Item, keepGets, keyUpdate, Metrics, rejectSets};
+use crate::cache::{costAdd, dropGets, Item, keepGets, keyUpdate, Metrics, rejectSets};
 use crate::cache::ItemFlag::ItemNew;
 use crate::cmsketch::CmSketch;
 use crate::reclaim::{Atomic, Shared};
@@ -42,6 +42,7 @@ pub struct DefaultPolicy<T> {
 
     pub(crate) evict: SampledLFU,
     pub(crate) metrics: Atomic<Metrics>,
+    pub(crate) flag: AtomicIsize,
     number_counters: i64,
     lock: Mutex<()>,
     max_cost: i64,
@@ -56,6 +57,7 @@ impl<T> DefaultPolicy<T> {
 
             evict: SampledLFU::new(max_cost, metrics),
             metrics: Atomic::from(metrics),
+            flag: AtomicIsize::new(0),
             number_counters,
             lock: Default::default(),
             max_cost,
@@ -72,13 +74,24 @@ impl<T> DefaultPolicy<T> {
         }
 
 
-        self.process_items(keys.clone(), guard);
-        let metrics = self.metrics.load(Ordering::SeqCst, guard);
-        if metrics.is_null() {
-            unsafe {
-                metrics.deref().add(keepGets, keys[0], keys.len() as u64, guard)
-            };
+        if self.flag.load(Ordering::SeqCst) == 0 {
+            self.flag.store(1, Ordering::SeqCst);
+            self.process_items(keys.clone(), guard);
+            let metrics = self.metrics.load(Ordering::SeqCst, guard);
+            if metrics.is_null() {
+                unsafe {
+                    metrics.deref().add(keepGets, keys[0], keys.len() as u64, guard)
+                };
+            }
+        } else {
+            let metrics = self.metrics.load(Ordering::SeqCst, guard);
+            if metrics.is_null() {
+                unsafe {
+                    metrics.deref().add(dropGets, keys[0], keys.len() as u64, guard)
+                };
+            }
         }
+
         /*select! {
             send(self.item_ch.0,keys.clone())->res =>{
                 if !self.metrics.is_null() {
@@ -145,8 +158,7 @@ impl<T> DefaultPolicy<T> {
         }
 
 
-
-        let inc_hits =  self.admit.estimate(key);
+        let inc_hits = self.admit.estimate(key);
         // sample is the eviction candidate pool to be filled via random sampling
         //
         // TODO: perhaps we should use a min heap here. Right now our time
@@ -155,7 +167,7 @@ impl<T> DefaultPolicy<T> {
 
         let mut sample = Vec::new();
         let mut victims = Vec::new();
-
+        room = self.evict.room_left(cost);
         while room < 0 {
             room = self.evict.room_left(cost);
             // fill up empty slots in sample
@@ -165,13 +177,14 @@ impl<T> DefaultPolicy<T> {
             let mut min_id: i64 = 0;
             let mut min_cost: i64 = 0;
 
-            for (i, pair) in sample.iter().enumerate() {
-                let hits = self.admit.estimate(pair.key);
+
+            for i in 0..sample.len() {
+                let hits = self.admit.estimate(sample[i].key);
                 if hits < min_hits {
-                    min_key = pair.key;
+                    min_key = sample[i].key;
                     min_hits = hits;
                     min_id = i as i64;
-                    min_cost = pair.cost;
+                    min_cost = sample[i].cost;
                 }
             }
             if inc_hits < min_hits {
@@ -203,38 +216,27 @@ impl<T> DefaultPolicy<T> {
 
     //TODO lock
     pub fn has(&self, key: u64, guard: &Guard) -> bool {
-
         self.evict.key_costs.contains_key(&key)
     }
 
     pub fn del<'g>(&'g mut self, key: &u64, guard: &'g Guard) {
-
-
-            self.evict.del(key);
-
+        self.evict.del(key);
     }
 
 
     pub fn update<'g>(&'g mut self, key: u64, cost: i64, guard: &'g Guard) {
-
-
-
         self.evict.update_if_has(key, cost, guard);
-
     }
 
     pub fn clear<'g>(&'g mut self, guard: &'g Guard) {
-
         self.admit.clear();
         self.evict.clear();
-
     }
 
     pub fn close(&mut self) {
         //self.stop.0.send(true).expect("Chanla close");
     }
     pub fn cost(&self, key: &u64, guard: &Guard) -> i64 {
-
         match self.evict.key_costs.get(&key) {
             None => -1,
             Some(v) => *v
@@ -242,13 +244,12 @@ impl<T> DefaultPolicy<T> {
     }
 
     pub fn cap(&self, key: u64, guard: &Guard) -> i64 {
-
         self.evict.max_cost - self.evict.used
     }
 
     fn process_items<'g>(&'g mut self, item: Vec<u64>, guard: &'g Guard) {
-
         self.admit.push(item);
+        self.flag.store(0, Ordering::SeqCst)
         /*        loop {
                     select! {
                        recv(self.item_ch.1) -> item => {
@@ -392,7 +393,7 @@ impl SampledLFU {
 
     fn add(&mut self, key: u64, cost: i64) {
         //eprintln!("{}", cost);
-         self.key_costs.insert(key, cost);
+        self.key_costs.insert(key, cost);
         self.used += cost;
     }
     fn update_if_has(&mut self, key: u64, cost: i64, guard: &Guard) -> bool {
@@ -432,4 +433,68 @@ impl SampledLFU {
 struct PolicyPair {
     key: u64,
     cost: i64,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use seize::Collector;
+    use crate::cache::{doNotUse, Metrics};
+    use crate::policy::DefaultPolicy;
+    use crate::reclaim::{Atomic, Shared};
+
+    #[test]
+    fn test_policy_policy_push() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let mut keep_count = 0;
+        for i in 0..10 {
+            if p.push(vec![1, 2, 3, 4, 5], &guard) {
+                keep_count += 1;
+            }
+        }
+        assert_ne!(keep_count, 0)
+    }
+
+    #[test]
+    fn test_policy_policy_add() {
+        let metrics: Atomic<Metrics> = Atomic::null();
+        let collector = Collector::new();
+        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
+        metrics.store(table, Ordering::SeqCst);
+
+        let guard = collector.enter();
+        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let mut p = DefaultPolicy::<i32>::new(1000, 100, shard_metric);
+        let v = p.add(1, 101, &guard);
+        assert!(v.0.len() == 0 || v.1, "can't add an item bigger than entire cache");
+
+        p.add(1, 1, &guard);
+        p.admit.increment(1);
+        p.admit.increment(2);
+        p.admit.increment(3);
+
+        let v = p.add(1, 1, &guard);
+        assert_eq!(v.0.len(), 0);
+        assert_eq!(v.1, false);
+
+        let v = p.add(2, 20, &guard);
+        assert_eq!(v.0.len(), 0);
+        assert_eq!(v.1, true);
+
+        let v = p.add(3, 90, &guard);
+        assert!(v.0.len()>0);
+        assert_eq!(v.1, true);
+
+        let v = p.add(4, 20, &guard);
+        assert_eq!(v.0.len(), 0);
+        assert_eq!(v.1, false);
+    }
 }

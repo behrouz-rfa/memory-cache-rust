@@ -26,7 +26,7 @@ impl CmSketch {
         let num_counter = next_2_power(num_counter);
 
         let mut skatch = CmSketch {
-            rows: vec![],
+            rows: Vec::with_capacity(cmDepth),
             seed: [0; cmDepth],
             mask: (num_counter - 1) as u64,
         };
@@ -37,6 +37,7 @@ impl CmSketch {
             skatch.seed[i] = source;
             skatch.rows.push(new_cm_row(num_counter));
         }
+
         skatch
     }
 

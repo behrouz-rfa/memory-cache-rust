@@ -826,7 +826,7 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    fn new(n: usize, collector: &Collector) -> Self {
+    pub(crate) fn new(n: usize, collector: &Collector) -> Self {
         let data = vec![Atomic::from(Shared::boxed([0u64; 256], collector)); n];
         Metrics {
             all: data.into_boxed_slice(),
