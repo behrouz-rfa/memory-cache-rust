@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use memory_cache_rust::cache::{Cache, Item};
 use memory_cache_rust::cache::ItemFlag::ItemUpdate;
 
-const ITER: u64 = 32 * 1024;
+const ITER: u64 = 32 * 10024;
 
 #[test]
 fn test_cache_key_to_hash() {
@@ -33,12 +33,12 @@ fn test_cache_key_to_hash_thread() {
 
     let cache = Arc::new(Cache::new());
 
-    let handles: Vec<_> = (0..10).map(|_| {
+    let handles: Vec<_> = (0..5).map(|_| {
         let map1 = cache.clone();
         thread::spawn(move || {
             let guard = map1.guard();
             for i in 0..ITER {
-                map1.set(i, i + 7, 0, &guard);
+                map1.set(i, i + 7, 1, &guard);
             }
         })
     }).collect();
@@ -46,13 +46,16 @@ fn test_cache_key_to_hash_thread() {
 
     for h in handles {
         h.join().unwrap()
-    }
 
 
     let c4 = Arc::clone(&cache);
     let guard = c4.guard();
     for i in 0..ITER {
-       assert_eq!( c4.get(&i, &guard),Some(&i));
+        if  let Some(v) = c4.get(&i, &guard) {
+            assert_eq!(v,(&(i +7)));
+        }else {
+            //item evicted from cache
+        }
     }
 
 }

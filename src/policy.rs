@@ -42,7 +42,7 @@ pub struct DefaultPolicy<T> {
 
     pub(crate) evict: SampledLFU,
     pub metrics: *const Metrics,
-    pub(crate) flag: AtomicIsize,
+    // pub(crate) flag: AtomicIsize,
     number_counters: i64,
     lock: Mutex<()>,
     max_cost: i64,
@@ -52,20 +52,17 @@ pub struct DefaultPolicy<T> {
 
 impl<T> DefaultPolicy<T> {
     pub(crate) fn new(number_counters: i64, max_cost: i64, metrics: *const Metrics) -> Self {
-        let mut p = DefaultPolicy {
+     DefaultPolicy {
             admit: TinyLFU::new(number_counters),
 
             evict: SampledLFU::new(max_cost, metrics),
             metrics: metrics,
-            flag: AtomicIsize::new(0),
+            // flag: AtomicIsize::new(0),
             number_counters,
             lock: Default::default(),
             max_cost,
             _merker: PhantomData,
-        };
-        ;
-
-        p
+        }
     }
 
     pub fn push<'g>(&mut self, keys: Vec<u64>, guard: &'g Guard) -> bool {
@@ -74,23 +71,23 @@ impl<T> DefaultPolicy<T> {
         }
 
 
-        if self.flag.load(Ordering::SeqCst) == 0 {
-            self.flag.store(1, Ordering::SeqCst);
+        // if self.flag.load(Ordering::SeqCst) == 0 {
+        //     self.flag.store(1, Ordering::SeqCst);
             self.process_items(keys.clone(), guard);
             let metrics = self.metrics;
-            if metrics.is_null() {
+            if !metrics.is_null() {
                 unsafe {
                     metrics.as_ref().unwrap().add(keepGets, keys[0], keys.len() as u64, guard)
                 };
             }
-        } else {
+       /* } else {
             let metrics = self.metrics;
             if metrics.is_null() {
                 unsafe {
                     metrics.as_ref().unwrap().add(dropGets, keys[0], keys.len() as u64, guard)
                 };
             }
-        }
+        }*/
 
         /*select! {
             send(self.item_ch.0,keys.clone())->res =>{
@@ -134,6 +131,9 @@ impl<T> DefaultPolicy<T> {
         let l = self.lock.lock();
 
 
+        if key > 200000 {
+            println!("")
+        }
         // can't add an item bigger than entire cache
         if cost > self.evict.max_cost {
             drop(l);
@@ -150,10 +150,10 @@ impl<T> DefaultPolicy<T> {
         //
         // calculate the remaining room in the cache (usually bytes)
         if room >= 0 {
-            drop(l);
             // there's enough room in the cache to store the new item without
             // overflowing, so we can do that now and stop here
             self.evict.add(key, cost);
+            drop(l);
             return (vec![], true);
         }
 
@@ -249,7 +249,7 @@ impl<T> DefaultPolicy<T> {
 
     fn process_items<'g>(&'g mut self, item: Vec<u64>, guard: &'g Guard) {
         self.admit.push(item);
-        self.flag.store(0, Ordering::SeqCst)
+        // self.flag.store(0, Ordering::SeqCst)
         /*        loop {
                     select! {
                        recv(self.item_ch.1) -> item => {
@@ -408,15 +408,17 @@ impl SampledLFU {
                         metrics.as_ref().unwrap().add(keyUpdate, key, 1, guard)
                     }
                 }
-                if metrics.is_null() {
-                    panic!("metric is null")
-                }
+
                 if *v > cost {
                     let diff = *v - cost;
-                    unsafe { metrics.as_ref().unwrap().add(costAdd, key, (diff - 1) as u64, guard) }
+                    if !metrics.is_null() {
+                        unsafe { metrics.as_ref().unwrap().add(costAdd, key, (diff - 1) as u64, guard) }
+                    }
                 } else if cost > *v {
                     let diff = *v - cost;
-                    unsafe { metrics.as_ref().unwrap().add(costAdd, key, diff as u64, guard) }
+                    if !metrics.is_null() {
+                        unsafe { metrics.as_ref().unwrap().add(costAdd, key, diff as u64, guard) }
+                    }
                 }
                 self.used += cost - v;
                 self.key_costs.insert(key, cost);

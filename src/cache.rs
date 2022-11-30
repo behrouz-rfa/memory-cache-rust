@@ -89,10 +89,10 @@ pub struct Config<K, V> {
 impl<K, V> Default for Config<K, V> {
     fn default() -> Self {
         Config {
-            numb_counters: 1e7 as i64, // maximum cost of cache (1GB).
-            max_cost: 1 << 30,// maximum cost of cache (1GB).
+            numb_counters: 1e7 as i64, // number of keys to track frequency of (10M).
+            max_cost:  20000,// maximum cost of cache
             buffer_items: 64,// number of keys per Get buffer.
-            metrics: true,
+            metrics: false,
             key_to_hash: |x| { (0, 0) },
             on_evict: None,
             cost: None,
@@ -197,13 +197,17 @@ impl<K, V, S> Default for Cache<K, V, S>
         Self::with_hasher(S::default(), Default::default())
     }
 }
+impl<K,V,S> Drop for Cache<K,V,S> {
+    fn drop(&mut self) {
 
+    }
+}
 impl<K, V, S> Cache<K, V, S>
 
 {
     pub fn with_hasher(hash_builder: S, c: Config<K, V>) -> Self {
         let collector = Collector::new();
-        let mut c = Cache {
+        let mut ca = Cache {
             store: Atomic::null(),
             policy: Atomic::null(),
             get_buf: Atomic::null(),
@@ -222,8 +226,27 @@ impl<K, V, S> Cache<K, V, S>
 
         };
 
-        c.metrics = Some(Box::new(Metrics::new(doNotUse, &c.collector)));
-        c
+        if c.metrics {
+            ca.metrics = Some(Box::new(Metrics::new(doNotUse, &ca.collector)));
+        }
+
+
+        if let Some(m) = &ca.metrics {
+            let v: *const Metrics = &**m;
+
+            let table = Shared::boxed(DefaultPolicy::new(ca.numb_counters, ca.max_cost, v), &ca.collector);
+            ca.policy.store(table, Ordering::SeqCst);
+
+            let table = Shared::boxed(RingBuffer::new(table, ca.buffer_items), &ca.collector);
+            ca.get_buf.store(table, Ordering::SeqCst);
+        }else {
+            let table = Shared::boxed(DefaultPolicy::new(ca.numb_counters, ca.max_cost, ptr::null()), &ca.collector);
+            ca.policy.store(table, Ordering::SeqCst);
+
+            let table = Shared::boxed(RingBuffer::new(table, ca.buffer_items), &ca.collector);
+            ca.get_buf.store(table, Ordering::SeqCst);
+        }
+        ca
     }
 
     /// Pin a `Guard` for use with this map.
@@ -392,7 +415,7 @@ impl<K, V, S> Cache<K, V, S>
 
                 table = Shared::boxed(p, &self.collector);
                 self.policy.store(table, Ordering::SeqCst);
-                let ring_buf = self.init_ringbuf(guard);
+               self.init_ringbuf(guard);
             } else {
                 continue;
             }
@@ -401,6 +424,8 @@ impl<K, V, S> Cache<K, V, S>
     }
 }
 
+
+
 impl<V, K, S> Cache<K, V, S>
     where K: Hash + Ord,
           S: BuildHasher,
@@ -408,25 +433,29 @@ impl<V, K, S> Cache<K, V, S>
     pub fn hash<Q: ?Sized + Hash + 'static>(&self, key: &Q) -> (u64, u64) {
         let t = TypeId::of::<&Q>();
         if t == TypeId::of::<&i64>() {
-            let v = key as *const Q as *const u8;
+            let v = key as *const Q as *const i64;
             let v = unsafe { v.as_ref().unwrap() };
+            if *v == 0 {
+                return (0, 0);
+            }
             return (*v as u64, 0);
         }
         if t == TypeId::of::<&i32>() {
-            let v = key as *const Q as *const u8;
+            let v = key as *const Q as *const i32;
             let v = unsafe { v.as_ref().unwrap() };
             return (*v as u64, 0);
         }
 
         if t == TypeId::of::<&u64>() {
-            let v = key as *const Q as *const u8;
+            let v = key as *const Q as *const u64;
             let v = unsafe { v.as_ref().unwrap() };
+
             return (*v as u64, 0);
         }
 
 
         if t == TypeId::of::<&u32>() {
-            let v = key as *const Q as *const u8;
+            let v = key as *const Q as *const u32;
             let v = unsafe { v.as_ref().unwrap() };
             return (*v as u64, 0);
         }
@@ -436,7 +465,22 @@ impl<V, K, S> Cache<K, V, S>
             let v = unsafe { v.as_ref().unwrap() };
             return (*v as u64, 0);
         }
+        if t == TypeId::of::<&usize>() {
+            let v = key as *const Q as *const usize;
+            let v = unsafe { v.as_ref().unwrap() };
+            return (*v as u64, 0);
+        }
 
+        if t == TypeId::of::<&i16>() {
+            let v = key as *const Q as *const i16;
+            let v = unsafe { v.as_ref().unwrap() };
+            return (*v as u64, 0);
+        }
+        if t == TypeId::of::<&i8>() {
+            let v = key as *const Q as *const i8;
+            let v = unsafe { v.as_ref().unwrap() };
+            return (*v as u64, 0);
+        }
         let mut h = self.build_hasher.build_hasher();
         key.hash(&mut h);
 
@@ -470,6 +514,7 @@ impl<V, K, S> Cache<K, V, S>
         if store.is_null() {
             return None;
         }
+
 
         let result = unsafe { store.deref() }.get(key_hash, conflict, guard);
         return match result {
@@ -546,12 +591,10 @@ impl<V, K, S> Cache<K, V, S>
         let value = Shared::boxed(value, &self.collector);
         // let mut old_value = None;
 
+        let mut policy = self.policy.load(Ordering::SeqCst, guard);
         loop {
-            let mut policy = self.policy.load(Ordering::SeqCst, guard);
-            if store.is_null() || policy.is_null() {
+            if store.is_null() {
                 store = self.init_store(guard);
-                policy = self.init_policy(guard);
-
                 continue;
             }
 
@@ -599,6 +642,9 @@ impl<V, K, S> Cache<K, V, S>
 
                     if added {
                         dstore.set(node, guard);
+                        if let Some(metrics) =  &self.metrics {
+                            metrics.add(keyAdd,item.key,1,guard)
+                        }
                     }
 
 
@@ -912,6 +958,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::Duration;
+    use hashbrown::HashSet;
 
     use rayon;
     use rayon::prelude::*;
@@ -922,6 +969,15 @@ mod tests {
     use crate::store::Node;
 
     const ITER: u64 = 32 * 1024;
+
+    #[test]
+    fn check() {
+        let v = 1e7 as i64;
+        let s = 1 << 30;
+        let v2 = 1e6 as i64 ;
+        let s2 = (1 << 20)  ;
+        println!("")
+    }
 
     #[test]
     fn test_cache_key_to_hash() {
@@ -937,30 +993,36 @@ mod tests {
 
     #[test]
     fn test_cache_insert_thread() {
-        let map = Arc::new(Cache::<u64, u64>::new());
+        let map = Cache::<u64, u64>::new();
+        // let map1 = Arc::clone(&map);
+        let mut hashet = HashSet::new();
 
-        let handler: Vec<_> = (0..10).map(|_| {
-            let map1 = map.clone();
-            return thread::spawn(move || {
-                let guard = map1.guard();
-                for i in 0..ITER {
-                    map1.set(i, i+7, 0, &guard);
-                }
-            });
-        }).collect();
+        let guard = map.guard();
+        for i in 0..300_u64 {
+            if i == 256 {
+                println!("")
+            }
+            let (key_hash, conflict) = map.hash(&i);
 
-        for h in handler {
-            h.join();
+            hashet.insert(key_hash);
         }
 
-        let c2 = Arc::clone(&map);
-        (0..ITER).into_par_iter().for_each(|i| {
-            let guard = c2.guard();
-            assert_eq!(c2.get(&i, &guard),Some(&(i+7)));
-        });
+        let size = hashet.len();
+
+        // let map2 = Arc::clone(&map);
+        for i in 0..300 {
+            if let Some(v) = map.get(&i, &guard) {
+                if &i != v {
+                    panic!("i not equel {i}", )
+                }
+                println!("key:{i}, value: {:?}", map.get(&i, &guard));
+            } else {
+                println!("key:{i}, value: None");
+            }
+        };
     }
 
-use std::collections::linked_list
+
     #[test]
     fn test_cache_key_to_hash_thread() {
         let mut key_to_hash_count = 0;
