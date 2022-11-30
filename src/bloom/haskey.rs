@@ -1,11 +1,10 @@
-use std::any::{Any, TypeId};
-use crate::bloom::rutil::{mem_hash, mem_hash_byte};
-use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
-use xxhash_rust::xxh3::xxh3_64;
-
+use std::any::TypeId;
 use std::mem::size_of;
 use std::ops::Deref;
 
+use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
+
+use crate::bloom::rutil::mem_hash;
 
 pub type KeyHash<T> = Box<dyn FnMut(T) -> (u64, i64)>;
 

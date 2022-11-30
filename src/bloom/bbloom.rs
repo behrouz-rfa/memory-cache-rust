@@ -8,8 +8,8 @@
 
 
 
-use math::round;
-use serde::{Serialize, Deserialize};
+
+use serde::{Deserialize, Serialize};
 
 const MASK: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 
@@ -149,7 +149,7 @@ impl Bloom {
         };
 
         for i in 0..bj.filter_set.len() {
-            let mut ptr: *mut i64 = self.bitset.as_mut_ptr();
+            let ptr: *mut i64 = self.bitset.as_mut_ptr();
             bj.filter_set[i] = unsafe { ptr.wrapping_offset(i as isize) as u8 }
         }
         let data = serde_json::to_vec(&bj);
@@ -183,23 +183,23 @@ fn getSize(mut u_i64: u64) -> (u64, u64) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
-    use std::hash::Hash;
-    use rand::{Rng, RngCore, SeedableRng};
-    use rand::rngs::StdRng;
+    use std::collections::HashSet;
+
     use uuid::Uuid;
-    use crate::bloom::rutil::{Memhash, mem_hash, mem_hash_byte};
+
+    use crate::bloom::rutil::mem_hash;
+
     use super::*;
 
     const N: usize = 1 << 16;
 
 
     fn worldlist() -> Vec<Vec<u8>> {
-        let seed = [0u8; 16];
+        let _seed = [0u8; 16];
         // let mut rng: StdRng = SeedableRng::from_seed(seed);
 
         let mut wordlist = Vec::with_capacity(N);
-        for i in 0..wordlist.capacity() {
+        for _i in 0..wordlist.capacity() {
             // let mut bytes = [0u8; 32];
             let uuid = Uuid::new_v4();
             // rng.fill_bytes(&mut bytes);
@@ -241,7 +241,7 @@ mod tests {
         let v = bf.has(18272025040905874063);
         assert_eq!(v, false);
 
-        let v = bf.has(18272025040905874063);
+        let _v = bf.has(18272025040905874063);
         bf.add_if_not_has(18272025040905874063);
         let v = bf.has(18272025040905874063);
         assert_eq!(v, true)

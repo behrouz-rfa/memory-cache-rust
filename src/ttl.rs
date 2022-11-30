@@ -2,13 +2,12 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time;
 use std::time::Duration;
+
 use parking_lot::Mutex;
-
 use seize::Guard;
-use crate::policy::{DefaultPolicy, Policy};
-use crate::reclaim::{Atomic, Shared};
-use crate::store::Store;
 
+use crate::policy::DefaultPolicy;
+use crate::reclaim::{Atomic, Shared};
 
 /// bucket type is a map of key to conflict.
 type Bucket = HashMap<u64, u64>;
@@ -40,7 +39,7 @@ impl ExpirationMap {
     }
 
     pub fn update<'g>(&'g self, key: u64, conflict: u64, old_expiration_time: Duration, new_exp_time: Duration, guard: &'g Guard) {
-        let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+        let buckets = self.buckets.load(Ordering::SeqCst, guard);
         let lock  = self.lock.lock();
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {
@@ -75,7 +74,7 @@ impl ExpirationMap {
         }
     }
     pub fn del<'g>(&'g self, key: &u64, expiration: Duration, guard: &'g Guard) {
-        let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+        let buckets = self.buckets.load(Ordering::SeqCst, guard);
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {
                 return;
@@ -141,8 +140,8 @@ impl ExpirationMap {
         }
     }
 
-    pub(crate) fn cleanup<'g, V>(&'g self, policy: &mut DefaultPolicy<V>, f: Option<OnEvict<&V>>, guard: &'g Guard) -> HashMap<u64,u64>{
-        let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+    pub(crate) fn cleanup<'g, V>(&'g self, _policy: &mut DefaultPolicy<V>, _f: Option<OnEvict<&V>>, guard: &'g Guard) -> HashMap<u64,u64>{
+        let buckets = self.buckets.load(Ordering::SeqCst, guard);
         let mut items_in_store = HashMap::new();
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {

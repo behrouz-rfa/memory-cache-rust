@@ -10,7 +10,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use memory_cache_rust::cache::{Cache, Config};
+use memory_cache_rust::cache::{Cache};
 
 const SIZE: usize = 1000;
 

@@ -20,7 +20,7 @@ use rayon;
 use rayon::prelude::*;
 use std::sync::Arc;
 
-use memory_cache_rust::cache::{Cache, Config};
+use memory_cache_rust::cache::{Cache};
 
 /* DASHMAP */
 const ITER: u64 = 32 * 1024;
@@ -37,7 +37,7 @@ fn task_insert_flurry_u64_u64_guard_every_it() -> Cache<u64, u64> {
 fn insert_flurry_u64_u64_guard_every_it(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_flurry_u64_u64_guard_every_it");
     group.throughput(Throughput::Elements(ITER as u64));
-    let max = num_cpus::get();
+    let _max = num_cpus::get();
 
     for threads in 1..2 {
         group.bench_with_input(
@@ -57,7 +57,7 @@ fn insert_flurry_u64_u64_guard_every_it(c: &mut Criterion) {
 }
 
 fn task_insert_flurry_u64_u64_guard_once(threads: usize) -> Cache<u64, u64> {
-    let mut map =  Arc::new(Cache::new());
+    let map =  Arc::new(Cache::new());
     let inc = ITER / (threads as u64);
 
     rayon::scope(|s| {
@@ -79,7 +79,7 @@ fn task_insert_flurry_u64_u64_guard_once(threads: usize) -> Cache<u64, u64> {
 fn insert_flurry_u64_u64_guard_once(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_flurry_u64_u64_guard_once");
     group.throughput(Throughput::Elements(ITER as u64));
-    let max = num_cpus::get();
+    let _max = num_cpus::get();
 
     for threads in 1..=2 {
         group.bench_with_input(
@@ -176,9 +176,9 @@ fn get_flurry_u64_u64_guard_once(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    insert_flurry_u64_u64_guard_every_it,
+    // insert_flurry_u64_u64_guard_every_it,
     // get_flurry_u64_u64_guard_every_it,
-    // insert_flurry_u64_u64_guard_once,
+    insert_flurry_u64_u64_guard_once,
     // get_flurry_u64_u64_guard_once,
 );
 criterion_main!(benches);

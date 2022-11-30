@@ -1,6 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::{mem, ptr};
 
 pub type NanoTime = Box<dyn Fn(i64) -> i64>;
 pub type CPUTicks = Box<dyn Fn(i64) -> i64>;

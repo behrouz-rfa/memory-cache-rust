@@ -1,10 +1,9 @@
-pub(crate) use seize::{Collector, Guard, Linked};
-
+use std::{fmt, ptr};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
-use std::{fmt, ptr};
 
+pub(crate) use seize::{Collector, Guard, Linked};
 
 pub(crate) struct Atomic<T>(seize::AtomicPtr<T>);
 

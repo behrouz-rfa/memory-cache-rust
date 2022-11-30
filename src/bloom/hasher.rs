@@ -1,14 +1,4 @@
-
 use std::any::{Any, TypeId};
-use std::hash::Hash;
-use crate::bloom::rutil::{mem_hash, mem_hash_byte};
-use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
-use xxhash_rust::xxh3::xxh3_64;
-
-use std::mem::size_of;
-use std::ops::Deref;
-use serde::__private::de::Content::U64;
-
 
 // pub type KeyHash<T> = Box<dyn FnMut(T) -> (u64, i64)>;
 
@@ -16,7 +6,7 @@ use serde::__private::de::Content::U64;
 
 pub fn value_to_int<T: 'static>(key: T) -> i64 {
     if is_cast::<T, u64>(&key) {
-        let  v = unsafe { std::mem::transmute::< & T,&u64,>(&key) };;
+        let  v = unsafe { std::mem::transmute::< & T,&u64,>(&key) };
         return *v as i64
     }
     panic!("")
@@ -95,7 +85,7 @@ pub fn cast_mut<U: 'static, V: 'static>(u: &mut U) -> Option<&mut V> {
 */
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_hash() {

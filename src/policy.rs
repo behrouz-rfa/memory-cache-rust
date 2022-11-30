@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::ptr;
-use std::sync::atomic::{AtomicIsize, Ordering};
+
 use parking_lot::Mutex;
 use seize::Guard;
+
 use crate::bloom::bbloom::Bloom;
-use crate::cache::{costAdd, dropGets, Item, keepGets, keyUpdate, Metrics, rejectSets};
+use crate::cache::{costAdd, Item, keepGets, keyUpdate, Metrics, rejectSets};
 use crate::cache::ItemFlag::ItemNew;
 use crate::cmsketch::CmSketch;
-use crate::reclaim::{Atomic, Shared};
+use crate::reclaim::Atomic;
 use crate::store::Node;
 
 const LFU_SAMPLE: usize = 5;
@@ -215,11 +215,11 @@ impl<T> DefaultPolicy<T> {
     }
 
     //TODO lock
-    pub fn has(&self, key: u64, guard: &Guard) -> bool {
+    pub fn has(&self, key: u64, _guard: &Guard) -> bool {
         self.evict.key_costs.contains_key(&key)
     }
 
-    pub fn del<'g>(&'g mut self, key: &u64, guard: &'g Guard) {
+    pub fn del<'g>(&'g mut self, key: &u64, _guard: &'g Guard) {
         self.evict.del(key);
     }
 
@@ -228,7 +228,7 @@ impl<T> DefaultPolicy<T> {
         self.evict.update_if_has(key, cost, guard);
     }
 
-    pub fn clear<'g>(&'g mut self, guard: &'g Guard) {
+    pub fn clear<'g>(&'g mut self, _guard: &'g Guard) {
         self.admit.clear();
         self.evict.clear();
     }
@@ -236,7 +236,7 @@ impl<T> DefaultPolicy<T> {
     pub fn close(&mut self) {
         //self.stop.0.send(true).expect("Chanla close");
     }
-    pub fn cost(&self, key: &u64, guard: &Guard) -> i64 {
+    pub fn cost(&self, key: &u64, _guard: &Guard) -> i64 {
         match self.evict.key_costs.get(&key) {
             None => -1,
             Some(v) => *v
@@ -247,7 +247,7 @@ impl<T> DefaultPolicy<T> {
         self.evict.max_cost - self.evict.used
     }
 
-    fn process_items<'g>(&'g mut self, item: Vec<u64>, guard: &'g Guard) {
+    fn process_items<'g>(&'g mut self, item: Vec<u64>, _guard: &'g Guard) {
         self.admit.push(item);
         // self.flag.store(0, Ordering::SeqCst)
         /*        loop {
@@ -304,7 +304,7 @@ impl TinyLFU {
     }
 
     pub fn push(&mut self, keys: Vec<u64>) {
-        for (i, key) in keys.iter().enumerate() {
+        for (_i, key) in keys.iter().enumerate() {
             self.increment(*key)
         }
     }
@@ -442,24 +442,23 @@ struct PolicyPair {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
     use seize::Collector;
+
     use crate::cache::{doNotUse, Metrics};
     use crate::policy::{DefaultPolicy, SampledLFU};
-    use crate::reclaim::{Atomic, Shared};
 
     #[test]
     fn test_policy_policy_push() {
         let collector = Collector::new();
 
-        let guard = collector.enter();
+        let _guard = collector.enter();
         let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
 
         let guard = collector.enter();
 
         let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
         let mut keep_count = 0;
-        for i in 0..10 {
+        for _i in 0..10 {
             if p.push(vec![1, 2, 3, 4, 5], &guard) {
                 keep_count += 1;
             }
@@ -599,7 +598,7 @@ mod tests {
 
         let collector = Collector::new();
 
-        let guard = collector.enter();
+        let _guard = collector.enter();
         let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
 
 
@@ -618,7 +617,7 @@ mod tests {
 
         let collector = Collector::new();
 
-        let guard = collector.enter();
+        let _guard = collector.enter();
         let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
 
 
@@ -656,7 +655,7 @@ mod tests {
 
         let collector = Collector::new();
 
-        let guard = collector.enter();
+        let _guard = collector.enter();
         let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
 
 

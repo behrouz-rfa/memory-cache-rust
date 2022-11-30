@@ -1,8 +1,3 @@
-
-
-use serde::de::Unexpected::Char;
-use crate::cache::Cache;
-
 pub mod bloom;
 mod store;
 mod reclaim;
@@ -16,13 +11,8 @@ mod ring;
 pub type DefaultHashBuilder = ahash::RandomState;
 
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn it_works() {
-
-    }
+    fn it_works() {}
 }

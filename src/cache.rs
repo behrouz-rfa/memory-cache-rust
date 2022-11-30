@@ -1,26 +1,20 @@
-use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
-
-use std::ops::{Add, Deref};
-use std::sync::atomic::{AtomicIsize, Ordering};
-use std::{ptr, thread, time};
+use std::{ptr, time};
 use std::any::TypeId;
 use std::fmt::{Debug, Formatter};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
-use std::process::id;
+use std::ops::{Add, Deref};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::Duration;
-use seahash::hash;
+
 use seize::{Collector, Guard, Linked};
-
-use crate::bloom::{hasher, haskey};
-use crate::reclaim::{Atomic, Shared};
-use crate::store::{Node, Store};
 use xxhash_rust::const_xxh3::xxh3_64 as const_xxh3;
-use xxhash_rust::xxh3::xxh3_64;
-use crate::bloom::haskey::key_to_hash;
-use crate::cache::ItemFlag::{ItemDelete, ItemNew, ItemUpdate};
-use crate::policy::{DefaultPolicy, Policy};
-use crate::ring::{RingBuffer, RingStripe};
 
+use crate::cache::ItemFlag::{ItemDelete, ItemNew, ItemUpdate};
+use crate::policy::{DefaultPolicy};
+use crate::reclaim::{Atomic, Shared};
+use crate::ring::RingBuffer;
+use crate::store::{Node, Store};
 
 /// number shared element on store
 pub const NUM_SHARDS: usize = 256;
@@ -90,10 +84,10 @@ impl<K, V> Default for Config<K, V> {
     fn default() -> Self {
         Config {
             numb_counters: 1e7 as i64, // number of keys to track frequency of (10M).
-            max_cost:  20000,// maximum cost of cache
+            max_cost: 1 << 30,// maximum cost of cache
             buffer_items: 64,// number of keys per Get buffer.
             metrics: false,
-            key_to_hash: |x| { (0, 0) },
+            key_to_hash: |_x| { (0, 0) },
             on_evict: None,
             cost: None,
         }
@@ -122,7 +116,7 @@ pub struct Cache<K, V, S = crate::DefaultHashBuilder> {
     size_buf_ctl: AtomicIsize,
     build_hasher: S,
     pub on_evict: Option<fn(u64, u64, &V, i64)>,
-    cost: Option<fn(&V) -> (i64)>,
+    cost: Option<fn(&V) -> i64>,
 
     _marker: PhantomData<K>,
 
@@ -197,11 +191,32 @@ impl<K, V, S> Default for Cache<K, V, S>
         Self::with_hasher(S::default(), Default::default())
     }
 }
-impl<K,V,S> Drop for Cache<K,V,S> {
+
+impl<K, V, S> Drop for Cache<K, V, S> {
     fn drop(&mut self) {
 
+        let guard = unsafe { Guard::unprotected() };
+
+        let table = self.store.swap(Shared::null(), Ordering::SeqCst, &guard);
+        if !table.is_null() {
+            // table was never allocated!
+            let mut table = unsafe { table.into_box() };
+            table.as_mut().data.clear()
+        }
+        let table = self.policy.swap(Shared::null(), Ordering::SeqCst, &guard);
+        if !table.is_null() {
+            // table was never allocated!
+            let mut table = unsafe { table.into_box() };
+            table.evict.key_costs.clear();
+        }
+        let table = self.get_buf.swap(Shared::null(), Ordering::SeqCst, &guard);
+        if !table.is_null() {
+            // table was never allocated!
+            let _ = unsafe { table.into_box() };
+        }
     }
 }
+
 impl<K, V, S> Cache<K, V, S>
 
 {
@@ -239,7 +254,7 @@ impl<K, V, S> Cache<K, V, S>
 
             let table = Shared::boxed(RingBuffer::new(table, ca.buffer_items), &ca.collector);
             ca.get_buf.store(table, Ordering::SeqCst);
-        }else {
+        } else {
             let table = Shared::boxed(DefaultPolicy::new(ca.numb_counters, ca.max_cost, ptr::null()), &ca.collector);
             ca.policy.store(table, Ordering::SeqCst);
 
@@ -410,12 +425,12 @@ impl<K, V, S> Cache<K, V, S>
                 let v: *const Metrics = &**m;
 
 
-                let mut p = DefaultPolicy::new(self.numb_counters, self.max_cost, v);
+                let p = DefaultPolicy::new(self.numb_counters, self.max_cost, v);
 
 
                 table = Shared::boxed(p, &self.collector);
                 self.policy.store(table, Ordering::SeqCst);
-               self.init_ringbuf(guard);
+                self.init_ringbuf(guard);
             } else {
                 continue;
             }
@@ -423,7 +438,6 @@ impl<K, V, S> Cache<K, V, S>
         }
     }
 }
-
 
 
 impl<V, K, S> Cache<K, V, S>
@@ -507,7 +521,7 @@ impl<V, K, S> Cache<K, V, S>
         }
         unsafe { buf.deref() }.push(key_hash, guard);
 
-        let mut store = self.store.load(Ordering::SeqCst, guard);
+        let store = self.store.load(Ordering::SeqCst, guard);
 
         // let mut old_value = None;
 
@@ -524,7 +538,7 @@ impl<V, K, S> Cache<K, V, S>
                 }
                 None
             }
-            Some(ref v) => {
+            Some(ref _v) => {
                 if let Some(metrics) = &self.metrics {
                     metrics.add(miss, key_hash, 1, guard);
                 }
@@ -591,7 +605,7 @@ impl<V, K, S> Cache<K, V, S>
         let value = Shared::boxed(value, &self.collector);
         // let mut old_value = None;
 
-        let mut policy = self.policy.load(Ordering::SeqCst, guard);
+        let policy = self.policy.load(Ordering::SeqCst, guard);
         loop {
             if store.is_null() {
                 store = self.init_store(guard);
@@ -635,23 +649,23 @@ impl<V, K, S> Cache<K, V, S>
 
             match item.flag {
                 ItemNew => {
-                    let (mut victims, added) = unsafe {
+                    let (victims, added) = unsafe {
                         let policy = policy.as_ptr();
                         policy.as_mut().unwrap().add(item.key, item.cost, guard)
                     };
 
                     if added {
                         dstore.set(node, guard);
-                        if let Some(metrics) =  &self.metrics {
-                            metrics.add(keyAdd,item.key,1,guard)
+                        if let Some(metrics) = &self.metrics {
+                            metrics.add(keyAdd, item.key, 1, guard)
                         }
                     }
 
 
                     for i in 0..victims.len() {
-                        let mut delVal = dstore.del(&victims[i].key, &0, guard);
+                        let delVal = dstore.del(&victims[i].key, &0, guard);
                         match delVal {
-                            Some((mut c, mut v)) => {
+                            Some((_c, _v)) => {
                                 // victims[i].value = Some(v.clone());
                                 // victims[i].conflict = c;
 
@@ -759,7 +773,7 @@ impl<V, K, S> Cache<K, V, S>
     }
 
     pub fn process_items<'g>(&'g self, node: Node<V>, mut item: Item<V>, cost: i64, guard: &'g Guard) {
-        let mut cost = cost;
+        let _cost = cost;
         match item.flag {
             ItemNew | ItemUpdate => unsafe {
                 if item.cost == 0 && self.cost.is_some() {
@@ -777,7 +791,7 @@ impl<V, K, S> Cache<K, V, S>
                         policy = self.init_policy(guard);
                         continue;
                     }
-                    let (mut victims, added) = unsafe {
+                    let (victims, added) = unsafe {
                         let p = policy.as_ptr();
                         let p = p.as_mut().unwrap();
                         p.add(item.key, item.cost, guard)
@@ -794,9 +808,9 @@ impl<V, K, S> Cache<K, V, S>
                     for i in 0..victims.len() {
                         let store = unsafe { store.as_ptr() };
                         let store = unsafe { store.as_mut().unwrap() };
-                        let mut delVal = store.del(&victims[i].key, &0, guard);
+                        let delVal = store.del(&victims[i].key, &0, guard);
                         match delVal {
-                            Some((mut c, mut v)) => {
+                            Some((_c, _v)) => {
                                 // victims[i].value = Some(v.clone());
                                 // victims[i].conflict = c;
 
@@ -818,7 +832,7 @@ impl<V, K, S> Cache<K, V, S>
                 }
             }
             ItemDelete => {
-                let mut policy = self.policy.load(Ordering::SeqCst, guard);
+                let policy = self.policy.load(Ordering::SeqCst, guard);
                 if policy.is_null() {
                     return;
                 }
@@ -835,7 +849,7 @@ impl<V, K, S> Cache<K, V, S>
                 store.del(&item.key, &item.conflict, guard);
             }
             ItemFlag::ItemUpdate => {
-                let mut policy = self.policy.load(Ordering::SeqCst, guard);
+                let policy = self.policy.load(Ordering::SeqCst, guard);
                 if policy.is_null() {
                     return;
                 }
@@ -931,7 +945,7 @@ impl Metrics {
     }
 
     pub fn clear<'g>(&self, guard: &'g Guard) {
-        let data = vec![Atomic::from(Shared::boxed([0u64; 256], guard.collector().unwrap())); doNotUse];
+        let _data = vec![Atomic::from(Shared::boxed([0u64; 256], guard.collector().unwrap())); doNotUse];
         // self.all.as_mut() = &mut *data.into_boxed_slice();
     }
 }
@@ -958,12 +972,13 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::Duration;
-    use hashbrown::HashSet;
 
+    use hashbrown::HashSet;
     use rayon;
     use rayon::prelude::*;
+
     use crate::bloom::haskey::key_to_hash;
-    use crate::cache::{Cache, Config, Item, NUM_SHARDS};
+    use crate::cache::{Cache, Item};
     use crate::cache::ItemFlag::ItemUpdate;
     use crate::reclaim::{Atomic, Shared};
     use crate::store::Node;
@@ -972,17 +987,17 @@ mod tests {
 
     #[test]
     fn check() {
-        let v = 1e7 as i64;
-        let s = 1 << 30;
-        let v2 = 1e6 as i64 ;
-        let s2 = (1 << 20)  ;
+        let _v = 1e7 as i64;
+        let _s = 1 << 30;
+        let _v2 = 1e6 as i64;
+        let _s2 = 1 << 20;
         println!("")
     }
 
     #[test]
     fn test_cache_key_to_hash() {
-        let mut key_to_hash_count = 0;
-        let mut cache = Cache::new();
+        let _key_to_hash_count = 0;
+        let cache = Cache::new();
 
         let guard = cache.guard();
         cache.set(1, 2, 1, &guard);
@@ -1002,12 +1017,12 @@ mod tests {
             if i == 256 {
                 println!("")
             }
-            let (key_hash, conflict) = map.hash(&i);
+            let (key_hash, _conflict) = map.hash(&i);
 
             hashet.insert(key_hash);
         }
 
-        let size = hashet.len();
+        let _size = hashet.len();
 
         // let map2 = Arc::clone(&map);
         for i in 0..300 {
@@ -1025,8 +1040,8 @@ mod tests {
 
     #[test]
     fn test_cache_key_to_hash_thread() {
-        let mut key_to_hash_count = 0;
-        let mut cache = Cache::new();
+        let _key_to_hash_count = 0;
+        let cache = Cache::new();
 
         let arcc = Arc::new(cache);
         let c1 = Arc::clone(&arcc);
@@ -1077,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_cache_with_ttl2() {
-        let mut key_to_hash_count = 0;
+        let _key_to_hash_count = 0;
         let cache = Cache::new();
 
         (0..ITER).into_par_iter().for_each(|i| {
@@ -1088,15 +1103,15 @@ mod tests {
 
     #[test]
     fn test_cache_with_ttl() {
-        let mut key_to_hash_count = 0;
+        let _key_to_hash_count = 0;
         let cache = Cache::new();
 
         let guard = cache.guard();
 
         let key = 1;
         let value = 1;
-        let cost = 1;
-        let ttl = Duration::from_millis(0);
+        let _cost = 1;
+        let _ttl = Duration::from_millis(0);
 
         loop {
             if !cache.set_with_ttl(1, 1, 1, Duration::from_millis(0), &guard) {
@@ -1127,7 +1142,7 @@ mod tests {
 
         thread::sleep(Duration::from_millis(10));
 
-        for i in 0..1000 {
+        for _i in 0..1000 {
             let (key_hash, conflict) = cache.hash(&1);
             cache.process_items(Node {
                 key: 0,
@@ -1155,7 +1170,7 @@ mod tests {
     fn test_sotre_set_get_thread() {
         let map = Arc::new(Cache::<u64, u64>::new());
 
-        let thread: Vec<_> = (0..10).map(|_| {
+        let _thread: Vec<_> = (0..10).map(|_| {
             let map1 = map.clone();
             thread::spawn(move || {
                 let guard = map1.guard();
@@ -1173,5 +1188,48 @@ mod tests {
                 }
             })
         }).collect();
+    }
+
+    // A unit struct without resources
+    #[derive(Debug, Clone, Copy)]
+    struct Unit;
+
+    // A tuple struct with resources that implements the `Clone` trait
+    #[derive(Clone, Debug)]
+    struct Pair(Box<i32>, Box<i32>);
+
+    #[test]
+    fn testclone() {
+        let unit = Unit;
+        // Copy `Unit`, there are no resources to move
+        let copied_unit = unit;
+
+        // Both `Unit`s can be used independently
+        println!("original: {:?}", unit);
+        println!("copy: {:?}", copied_unit);
+
+        // Instantiate `Pair`
+        let pair = Pair(Box::new(1), Box::new(2));
+        println!("original: {:?}", pair);
+
+        // Move `pair` into `moved_pair`, moves resources
+        let moved_pair = pair;
+        println!("moved: {:?}", moved_pair);
+
+        // Error! `pair` has lost its resources
+        // println!("original: {:?}", pair);
+        // TODO ^ Try uncommenting this line
+
+        // Clone `moved_pair` into `cloned_pair` (resources are included)
+        let cloned_pair = moved_pair.clone();
+        // Drop the original pair using std::mem::drop
+        drop(moved_pair);
+
+        // Error! `moved_pair` has been dropped
+        //println!("copy: {:?}", moved_pair);
+        // TODO ^ Try uncommenting this line
+
+        // The result from .clone() can still be used!
+        println!("clone: {:?}", cloned_pair);
     }
 }

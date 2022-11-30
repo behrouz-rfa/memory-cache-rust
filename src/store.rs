@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::{Duration, Instant};
 
-
 use parking_lot::Mutex;
-use seize::{Collector, Guard, Linked};
-use crate::cache::{Item, ItemFlag, NUM_SHARDS, PutResult};
+use seize::Guard;
+
+use crate::cache::{Item, NUM_SHARDS};
 use crate::policy::DefaultPolicy;
-use crate::reclaim;
-use crate::reclaim::{Atomic, CompareExchangeError, Shared};
+use crate::reclaim::Atomic;
 use crate::ttl::ExpirationMap;
 
 pub struct Node<V> {
@@ -51,15 +49,15 @@ pub(crate) struct Store<V> {
     lock: Mutex<()>,
 }
 
-impl<V> Clone for Store<V> {
-    fn clone(&self) -> Self {
-        let mut store = Store::new();
-        for map in &self.data {
-            store.data.push(map.clone())
-        }
-        store
-    }
-}
+// impl<V> Clone for Store<V> {
+//     fn clone(&self) -> Self {
+//         let mut store = Store::new();
+//         for map in &self.data {
+//             store.data.push(map.clone())
+//         }
+//         store
+//     }
+// }
 
 impl<V> Deref for Store<V> {
     type Target = ();
@@ -80,7 +78,7 @@ impl<V> Store<V> {
         Self::from(Vec::with_capacity(NUM_SHARDS))
     }
     pub fn from(mut data: Vec<HashMap<u64, Node<V>>>) -> Self {
-        for i in 0..NUM_SHARDS {
+        for _i in 0..NUM_SHARDS {
             data.push(HashMap::new());
         }
 
@@ -90,9 +88,9 @@ impl<V> Store<V> {
             lock: Default::default(),
         }
     }
-    pub(crate) fn clear<'g>(&'g mut self, guard: &'g Guard) {
+    pub(crate) fn clear<'g>(&'g mut self, _guard: &'g Guard) {
         self.data = Vec::with_capacity(NUM_SHARDS);
-        for i in 0..NUM_SHARDS {
+        for _i in 0..NUM_SHARDS {
             self.data.push(HashMap::new());
         }
     }
@@ -120,7 +118,7 @@ impl<V> Store<V> {
        ) -> Result<Shared<'g, HashMap<u64, Node<V>>>, reclaim::CompareExchangeError<'g, HashMap<u64, Node<V>>>> {
            self.data[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire, guard)
        }*/
-    pub(crate) fn expiration<'g>(&'g mut self, key: &u64, guard: &'g Guard<'_>) -> Option<Duration> {
+    pub(crate) fn expiration<'g>(&'g mut self, key: &u64, _guard: &'g Guard<'_>) -> Option<Duration> {
         let index = self.bini(*key);
 
         return match self.data[index].get(key) {
@@ -139,7 +137,7 @@ impl<V> Store<V> {
             None => {
                 drop(lock);
                 None
-            },
+            }
             Some(v) => {
                 if confilict_hash != 0 && confilict_hash != v.conflict {
                     drop(lock);
@@ -172,7 +170,7 @@ impl<V> Store<V> {
         match self.data[index].get(&item.key) {
             None => {
                 if item.expiration.is_some() {
-                   self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
+                    self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
                 }
 
                 self.data[index].insert(item.key, item);
@@ -193,7 +191,6 @@ impl<V> Store<V> {
                 return;
             }
         }
-
     }
 
     pub(crate) fn update<'g>(&'g mut self, item: &Item<V>, guard: &'g Guard<'_>) -> bool {
@@ -256,10 +253,10 @@ impl<V> Store<V> {
             match self.expiration(&key,
                                   guard) {
                 None => { continue; }
-                Some(v) => {
-                    let cost = policy.cost(&key, guard);
+                Some(_v) => {
+                    let _cost = policy.cost(&key, guard);
                     policy.del(&key, guard);
-                    let value = self.del(&key, &conflict, guard);
+                    let _value = self.del(&key, &conflict, guard);
                     //ToDO for evict
                     // if f.is_some(){
                     // //ToDO for evict
@@ -271,16 +268,16 @@ impl<V> Store<V> {
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-    use std::thread;
     use seize::Collector;
+
     use crate::bloom::haskey::key_to_hash;
     use crate::cache::Item;
     use crate::cache::ItemFlag::ItemNew;
-    use crate::reclaim::{Atomic, Shared};
+    use crate::reclaim::Shared;
     use crate::store::{Node, Store};
 
     const ITER: u64 = 32 * 1024;

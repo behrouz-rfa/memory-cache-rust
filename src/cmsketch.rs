@@ -1,8 +1,5 @@
-use std::fmt::format;
-use std::ops::Add;
-use std::time;
 use std::time::SystemTime;
-use rand::distributions::Uniform;
+
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 
@@ -43,7 +40,7 @@ impl CmSketch {
 
   pub  fn increment(&mut self, hashed: u64) {
         for i in 0..self.rows.len() {
-            self.rows[i].increment(((hashed ^ self.seed[i]) & self.mask))
+            self.rows[i].increment((hashed ^ self.seed[i]) & self.mask)
         }
     }
 
@@ -110,7 +107,7 @@ impl CmRows {
 }
 
 fn new_cm_row(x: i64) -> CmRows {
-    CmRows((vec![0u8; (x / 2) as usize]))
+    CmRows(vec![0u8; (x / 2) as usize])
 }
 
 
@@ -181,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_sketch() {
-        let mut s = CmSketch::new(5);
+        let s = CmSketch::new(5);
         assert_eq!(s.mask, 7)
     }
 

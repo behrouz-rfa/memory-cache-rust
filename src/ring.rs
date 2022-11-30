@@ -1,8 +1,10 @@
 use std::sync::atomic::Ordering;
 use std::vec;
-use seize::{Collector, Guard};
+
+use seize::Guard;
 use syncpool::prelude::*;
-use crate::policy::{DefaultPolicy, Policy};
+
+use crate::policy::DefaultPolicy;
 use crate::reclaim::{Atomic, Shared};
 
 pub type RingConsumer = Box<dyn Fn(Vec<u64>) -> bool>;
@@ -107,7 +109,7 @@ impl<T> RingBuffer<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_ring_drain() {
