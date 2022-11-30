@@ -1,14 +1,16 @@
 use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
-use std::marker::PhantomData;
+
 use std::ops::{Add, Deref};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::{ptr, thread, time};
 use std::any::TypeId;
 use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
 use std::process::id;
 use std::time::Duration;
 use seahash::hash;
 use seize::{Collector, Guard, Linked};
+
 use crate::bloom::{hasher, haskey};
 use crate::reclaim::{Atomic, Shared};
 use crate::store::{Node, Store};
@@ -116,7 +118,7 @@ pub struct Cache<K, V, S = crate::DefaultHashBuilder> {
     /// creation, or 0 for default. After initialization, holds the
     /// next element count value upon which to resize the table.
     size_ctl: AtomicIsize,
-    size_metrics_ctl: AtomicIsize,
+
     size_buf_ctl: AtomicIsize,
     build_hasher: S,
     pub on_evict: Option<fn(u64, u64, &V, i64)>,
@@ -136,8 +138,7 @@ pub struct Cache<K, V, S = crate::DefaultHashBuilder> {
     // overflowing the MaxCost value.
     pub max_cost: i64,
 
-    pub(crate) metrics: Atomic<Metrics>,
-
+    pub(crate) metrics: Option<Box<Metrics>>,
 
 }
 
@@ -162,7 +163,6 @@ impl<K, V, S> Clone for Cache<K, V, S>
             get_buf: Atomic::from(self.get_buf.load(Ordering::SeqCst, &self.guard())),
             collector: self.collector.clone(),
             size_ctl: AtomicIsize::from(self.size_ctl.load(Ordering::SeqCst)),
-            size_metrics_ctl: AtomicIsize::from(self.size_metrics_ctl.load(Ordering::SeqCst)),
             size_buf_ctl: AtomicIsize::from(self.size_buf_ctl.load(Ordering::SeqCst)),
             build_hasher: self.build_hasher.clone(),
             on_evict: None,
@@ -173,7 +173,7 @@ impl<K, V, S> Clone for Cache<K, V, S>
             numb_counters: self.numb_counters,
             buffer_items: self.buffer_items,
             max_cost: self.max_cost,
-            metrics: Atomic::from(self.metrics.load(Ordering::SeqCst, &self.guard())),
+            metrics: self.metrics.clone(),
 
         }
     }
@@ -202,13 +202,13 @@ impl<K, V, S> Cache<K, V, S>
 
 {
     pub fn with_hasher(hash_builder: S, c: Config<K, V>) -> Self {
-        let c = Cache {
+        let collector = Collector::new();
+        let mut c = Cache {
             store: Atomic::null(),
             policy: Atomic::null(),
             get_buf: Atomic::null(),
-            collector: Collector::new(),
+            collector: collector,
             size_ctl: AtomicIsize::new(0),
-            size_metrics_ctl: AtomicIsize::new(0),
             size_buf_ctl: AtomicIsize::new(0),
             build_hasher: hash_builder,
             on_evict: None,
@@ -218,10 +218,11 @@ impl<K, V, S> Cache<K, V, S>
 
             numb_counters: c.numb_counters,
             max_cost: c.max_cost,
-            metrics: Atomic::null(),
+            metrics: None,
 
         };
 
+        c.metrics = Some(Box::new(Metrics::new(doNotUse, &c.collector)));
         c
     }
 
@@ -240,47 +241,47 @@ impl<K, V, S> Cache<K, V, S>
     }
 
 
-    fn init_metrics<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Metrics> {
-        loop {
-            let table = self.metrics.load(Ordering::SeqCst, guard);
-            // safety: we loaded the table while the thread was marked as active.
-            // table won't be deallocated until the guard is dropped at the earliest.
-            if !table.is_null() {
-                break table;
-            }
-
-            //try to allocate the table
-            let mut sc = self.size_metrics_ctl.load(Ordering::SeqCst);
-            if sc < 0 {
-                // we lost the initialization race; just spin
-                std::thread::yield_now();
-                continue;
-            }
-
-            if self
-                .size_metrics_ctl
-                .compare_exchange(sc, -1, Ordering::SeqCst, Ordering::Relaxed)
-                .is_ok() {
-                // we get to do it!
-                let mut table = self.metrics.load(Ordering::SeqCst, guard);
-
+    /*    fn init_metrics<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Metrics> {
+            loop {
+                let table = self.metrics.load(Ordering::SeqCst, guard);
                 // safety: we loaded the table while the thread was marked as active.
                 // table won't be deallocated until the guard is dropped at the earliest.
-                if table.is_null() {
-                    let n = if sc > 0 {
-                        sc as usize
-                    } else {
-                        doNotUse
-                    };
-                    table = Shared::boxed(Metrics::new(n, &self.collector), &self.collector);
-                    self.metrics.store(table, Ordering::SeqCst);
-                    sc = load_factor!(n as isize);
+                if !table.is_null() {
+                    break table;
                 }
-                self.size_metrics_ctl.store(sc, Ordering::SeqCst);
-                break table;
+
+                //try to allocate the table
+                let mut sc = self.size_metrics_ctl.load(Ordering::SeqCst);
+                if sc < 0 {
+                    // we lost the initialization race; just spin
+                    std::thread::yield_now();
+                    continue;
+                }
+
+                if self
+                    .size_metrics_ctl
+                    .compare_exchange(sc, -1, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok() {
+                    // we get to do it!
+                    let mut table = self.metrics.load(Ordering::SeqCst, guard);
+
+                    // safety: we loaded the table while the thread was marked as active.
+                    // table won't be deallocated until the guard is dropped at the earliest.
+                    if table.is_null() {
+                        let n = if sc > 0 {
+                            sc as usize
+                        } else {
+                            doNotUse
+                        };
+                        table = Shared::boxed(Metrics::new(n, &self.collector), &self.collector);
+                        self.metrics.store(table, Ordering::SeqCst);
+                        sc = load_factor!(n as isize);
+                    }
+                    self.size_metrics_ctl.store(sc, Ordering::SeqCst);
+                    break table;
+                }
             }
-        }
-    }
+        }*/
     fn init_ringbuf<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, RingBuffer<V>> {
         loop {
             let table = self.get_buf.load(Ordering::SeqCst, guard);
@@ -361,7 +362,11 @@ impl<K, V, S> Cache<K, V, S>
                     self.store.store(table, Ordering::SeqCst);
                     sc = load_factor!(n as isize);
                 }
+
+
                 self.size_ctl.store(sc, Ordering::SeqCst);
+
+
                 break table;
             }
         }
@@ -377,14 +382,20 @@ impl<K, V, S> Cache<K, V, S>
             }
 
             //try to allocate the table
-            let metrics = self.init_metrics(guard);
+            // let metrics = Box::into_raw(Box::new(Metrics::new(doNotUse, &self.collector)));
+            if let Some(m) = &self.metrics {
+                let v: *const Metrics = &**m;
 
-            let mut p = DefaultPolicy::new(self.numb_counters, self.max_cost, metrics);
+
+                let mut p = DefaultPolicy::new(self.numb_counters, self.max_cost, v);
 
 
-            table = Shared::boxed(p, &self.collector);
-            self.policy.store(table, Ordering::SeqCst);
-            let ring_buf = self.init_ringbuf(guard);
+                table = Shared::boxed(p, &self.collector);
+                self.policy.store(table, Ordering::SeqCst);
+                let ring_buf = self.init_ringbuf(guard);
+            } else {
+                continue;
+            }
             break table;
         }
     }
@@ -463,19 +474,15 @@ impl<V, K, S> Cache<K, V, S>
         let result = unsafe { store.deref() }.get(key_hash, conflict, guard);
         return match result {
             None => {
-                let metrics = self.metrics.load(Ordering::SeqCst, guard);
-                if metrics.is_null() {
-                    unsafe { metrics.deref().add(hit, key_hash, 1, guard) };
+                if let Some(metrics) = &self.metrics {
+                    metrics.add(hit, key_hash, 1, guard);
                 }
-
                 None
             }
             Some(ref v) => {
-                let metrics = self.metrics.load(Ordering::SeqCst, guard);
-                if metrics.is_null() {
-                    unsafe { metrics.deref().add(miss, key_hash, 1, guard) };
+                if let Some(metrics) = &self.metrics {
+                    metrics.add(miss, key_hash, 1, guard);
                 }
-
                 result
             }
         };
@@ -538,69 +545,65 @@ impl<V, K, S> Cache<K, V, S>
         let mut store = self.store.load(Ordering::SeqCst, guard);
         let value = Shared::boxed(value, &self.collector);
         // let mut old_value = None;
+
         loop {
-            if store.is_null() {
+            let mut policy = self.policy.load(Ordering::SeqCst, guard);
+            if store.is_null() || policy.is_null() {
                 store = self.init_store(guard);
+                policy = self.init_policy(guard);
+
                 continue;
             }
 
-            let store = unsafe { store.as_ptr() };
-            let store = unsafe { store.as_mut().unwrap() };
+            let dstore = unsafe { store.as_ptr() };
+            let dstore = unsafe { dstore.as_mut().unwrap() };
 
             let mut item = Item {
                 flag: ItemNew,
                 key: key_hash,
                 conflict: conflict,
-                value: value.into(),
+                value: Atomic::null(),
                 cost,
                 expiration,
             };
-            let mut item2 = Item {
-                flag: ItemNew,
+            item.value.store(value, Ordering::SeqCst);
+
+            if dstore.update(&item, guard) {
+                item.flag = ItemUpdate
+            };
+
+            let node = Node {
                 key: key_hash,
-                conflict: conflict,
-                value: value.into(),
-                cost,
+                conflict,
+                value: Atomic::null(),
                 expiration,
             };
-            // cost is eventually updated. The expiration must also be immediately updated
-            // to prevent items from being prematurely removed from the map.
-            if store.update(item, guard) {
-                item2.flag = ItemUpdate
-            };
+            node.value.store(value, Ordering::SeqCst);
 
-            let node = Node::new(key_hash, conflict, value, expiration);
-
-
-            match item2.flag {
+            match item.flag {
                 ItemNew | ItemUpdate => unsafe {
-                    if item2.cost == 0 && self.cost.is_some() {
-                        item2.cost = (self.cost.unwrap())(item2.value.load(Ordering::SeqCst, guard).deref());
+                    if item.cost == 0 && self.cost.is_some() {
+                        item.cost = (self.cost.unwrap())(item.value.load(Ordering::SeqCst, guard).deref());
                     }
                 }
                 _ => {}
             }
 
-            let mut policy = self.policy.load(Ordering::SeqCst, guard);
-            if policy.is_null() {
-                policy = self.init_policy(guard);
-                continue;
-            }
 
-            match item2.flag {
+            match item.flag {
                 ItemNew => {
                     let (mut victims, added) = unsafe {
                         let policy = policy.as_ptr();
-                        policy.as_mut().unwrap().add(item2.key, item2.cost, guard)
+                        policy.as_mut().unwrap().add(item.key, item.cost, guard)
                     };
 
                     if added {
-                        store.set(node, guard);
+                        dstore.set(node, guard);
                     }
 
 
                     for i in 0..victims.len() {
-                        let mut delVal = store.del(&victims[i].key, &0, guard);
+                        let mut delVal = dstore.del(&victims[i].key, &0, guard);
                         match delVal {
                             Some((mut c, mut v)) => {
                                 // victims[i].value = Some(v.clone());
@@ -626,14 +629,14 @@ impl<V, K, S> Cache<K, V, S>
                 ItemDelete => {
                     unsafe {
                         let policy = policy.as_ptr();
-                        policy.as_mut().unwrap().del(&item2.key, guard)
+                        policy.as_mut().unwrap().del(&item.key, guard)
                     }
-                    store.del(&item2.key, &item2.conflict, guard);
+                    dstore.del(&item.key, &item.conflict, guard);
                 }
                 ItemUpdate => {
                     unsafe {
                         let policy = policy.as_ptr();
-                        policy.as_mut().unwrap().update(item2.key, item2.cost, guard);
+                        policy.as_mut().unwrap().update(item.key, item.cost, guard);
                     }
                     // unsafe { policy.deref() }.update(item2.key, item2.cost, guard);
                 }
@@ -680,7 +683,6 @@ impl<V, K, S> Cache<K, V, S>
         // block until processItems  is returned
         let store = self.store.load(Ordering::SeqCst, guard);
         let policy = self.policy.load(Ordering::SeqCst, guard);
-        let metrics = self.metrics.load(Ordering::SeqCst, guard);
 
 
         unsafe {
@@ -695,9 +697,9 @@ impl<V, K, S> Cache<K, V, S>
                 p.as_mut().unwrap().clear(guard);
             };
         }
-        if !metrics.is_null() {
-            unsafe { metrics.deref() }.clear(guard);
-        }
+
+        self.clear(guard);
+
 
         /* let (tx, rx) = crossbeam_channel::unbounded();
          self.set_buf = tx;
@@ -810,7 +812,6 @@ impl<V, K, S> Cache<K, V, S>
     }
 }
 
-
 type MetricType = usize;
 
 pub const hit: MetricType = 0;
@@ -836,6 +837,14 @@ pub const doNotUse: MetricType = 11;
 pub struct Metrics {
     pub(crate) all: Box<[Atomic<[u64; 256]>]>,
 
+}
+
+impl Clone for Metrics {
+    fn clone(&self) -> Self {
+        Self {
+            all: self.all.clone()
+        }
+    }
 }
 
 impl Metrics {
@@ -926,6 +935,32 @@ mod tests {
         println!("{:?}", cache.get(&2, &guard));
     }
 
+    #[test]
+    fn test_cache_insert_thread() {
+        let map = Arc::new(Cache::<u64, u64>::new());
+
+        let handler: Vec<_> = (0..10).map(|_| {
+            let map1 = map.clone();
+            return thread::spawn(move || {
+                let guard = map1.guard();
+                for i in 0..ITER {
+                    map1.set(i, i+7, 0, &guard);
+                }
+            });
+        }).collect();
+
+        for h in handler {
+            h.join();
+        }
+
+        let c2 = Arc::clone(&map);
+        (0..ITER).into_par_iter().for_each(|i| {
+            let guard = c2.guard();
+            assert_eq!(c2.get(&i, &guard),Some(&(i+7)));
+        });
+    }
+
+use std::collections::linked_list
     #[test]
     fn test_cache_key_to_hash_thread() {
         let mut key_to_hash_count = 0;
@@ -1049,9 +1084,9 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let v = cache.set(2, 2, 1, &guard);
         assert_eq!(v, true);
-        let metrics = cache.metrics.load(Ordering::SeqCst, &guard);
-        assert_eq!(metrics.is_null(), false);
-        unsafe { assert_eq!(unsafe { metrics.deref() }.SetsDropped(&guard), 0) }
+
+        /*        assert_eq!(cache.metrics.is_none(), false);
+                assert_eq!(cache.metrics.unwrap().SetsDropped(&guard), 0)*/
     }
 
     #[test]

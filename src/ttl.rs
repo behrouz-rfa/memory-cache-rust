@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time;
 use std::time::Duration;
+use parking_lot::Mutex;
 
 use seize::Guard;
 use crate::policy::{DefaultPolicy, Policy};
@@ -13,10 +14,12 @@ use crate::store::Store;
 type Bucket = HashMap<u64, u64>;
 
 /// expirationMap is a map of bucket number to the corresponding bucket.
-#[derive(Clone)]
+
 pub struct ExpirationMap {
     buckets: Atomic<HashMap<i64, Bucket>>,
+    lock: Mutex<()>
 }
+
 
 
 pub type OnEvict<V> = fn (u64, u64, V, i64);
@@ -28,6 +31,7 @@ impl ExpirationMap {
     pub fn new() -> Self {
         ExpirationMap {
             buckets: Atomic::null(),
+            lock: Default::default()
         }
     }
 
@@ -37,8 +41,10 @@ impl ExpirationMap {
 
     pub fn update<'g>(&'g self, key: u64, conflict: u64, old_expiration_time: Duration, new_exp_time: Duration, guard: &'g Guard) {
         let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+        let lock  = self.lock.lock();
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {
+                drop(lock);
                 return;
             }
 
@@ -64,7 +70,7 @@ impl ExpirationMap {
                     b.insert(key, conflict);
                 }
             };
-
+            drop(lock);
             break;
         }
     }
@@ -98,6 +104,7 @@ impl ExpirationMap {
             return;
         }
         let mut buckets = self.buckets.load(Ordering::SeqCst, guard);
+        let lock  = self.lock.lock();
         loop {
             if buckets.is_null() || !unsafe { buckets.deref() }.is_empty() {
                 buckets = self.init_buckets(guard);
@@ -116,6 +123,7 @@ impl ExpirationMap {
                     b.insert(key, conflict);
                 }
             }
+            drop(lock);
             break;
         }
     }

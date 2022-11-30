@@ -41,7 +41,7 @@ pub struct DefaultPolicy<T> {
     pub(crate) admit: TinyLFU,
 
     pub(crate) evict: SampledLFU,
-    pub(crate) metrics: Atomic<Metrics>,
+    pub metrics: *const Metrics,
     pub(crate) flag: AtomicIsize,
     number_counters: i64,
     lock: Mutex<()>,
@@ -51,12 +51,12 @@ pub struct DefaultPolicy<T> {
 
 
 impl<T> DefaultPolicy<T> {
-    pub(crate) fn new(number_counters: i64, max_cost: i64, metrics: Shared<Metrics>) -> Self {
+    pub(crate) fn new(number_counters: i64, max_cost: i64, metrics: *const Metrics) -> Self {
         let mut p = DefaultPolicy {
             admit: TinyLFU::new(number_counters),
 
             evict: SampledLFU::new(max_cost, metrics),
-            metrics: Atomic::from(metrics),
+            metrics: metrics,
             flag: AtomicIsize::new(0),
             number_counters,
             lock: Default::default(),
@@ -77,17 +77,17 @@ impl<T> DefaultPolicy<T> {
         if self.flag.load(Ordering::SeqCst) == 0 {
             self.flag.store(1, Ordering::SeqCst);
             self.process_items(keys.clone(), guard);
-            let metrics = self.metrics.load(Ordering::SeqCst, guard);
+            let metrics = self.metrics;
             if metrics.is_null() {
                 unsafe {
-                    metrics.deref().add(keepGets, keys[0], keys.len() as u64, guard)
+                    metrics.as_ref().unwrap().add(keepGets, keys[0], keys.len() as u64, guard)
                 };
             }
         } else {
-            let metrics = self.metrics.load(Ordering::SeqCst, guard);
+            let metrics = self.metrics;
             if metrics.is_null() {
                 unsafe {
-                    metrics.deref().add(dropGets, keys[0], keys.len() as u64, guard)
+                    metrics.as_ref().unwrap().add(dropGets, keys[0], keys.len() as u64, guard)
                 };
             }
         }
@@ -189,10 +189,10 @@ impl<T> DefaultPolicy<T> {
             }
             if inc_hits < min_hits {
                 unsafe {
-                    let metrics = self.metrics.load(Ordering::SeqCst, guard);
+                    let metrics = self.metrics;
                     if metrics.is_null() {
                         unsafe {
-                            metrics.deref().add(rejectSets, key, 1, guard)
+                            metrics.as_ref().unwrap().add(rejectSets, key, 1, guard)
                         };
                     }
                 }
@@ -351,16 +351,18 @@ pub struct SampledLFU {
     pub key_costs: HashMap<u64, i64>,
     pub max_cost: i64,
     pub used: i64,
-    pub(crate) metrics: Atomic<Metrics>,
+    pub(crate) metrics: *const Metrics,
 }
 
+
+
 impl SampledLFU {
-    fn new(max_cost: i64, shared: Shared<Metrics>) -> Self {
+    fn new(max_cost: i64, shared: *const Metrics) -> Self {
         SampledLFU {
             key_costs: HashMap::new(),
             max_cost,
             used: 0,
-            metrics: Atomic::from(shared),
+            metrics: shared
         }
     }
 
@@ -400,10 +402,10 @@ impl SampledLFU {
         match self.key_costs.get(&key) {
             None => false,
             Some(v) => {
-                let metrics = self.metrics.load(Ordering::SeqCst, guard);
+                let metrics = self.metrics;
                 unsafe {
                     if !metrics.is_null() {
-                        metrics.deref().add(keyUpdate, key, 1, guard)
+                        metrics.as_ref().unwrap().add(keyUpdate, key, 1, guard)
                     }
                 }
                 if metrics.is_null() {
@@ -411,10 +413,10 @@ impl SampledLFU {
                 }
                 if *v > cost {
                     let diff = *v - cost;
-                    unsafe { metrics.deref().add(costAdd, key, (diff - 1) as u64, guard) }
+                    unsafe { metrics.as_ref().unwrap().add(costAdd, key, (diff - 1) as u64, guard) }
                 } else if cost > *v {
                     let diff = *v - cost;
-                    unsafe { metrics.deref().add(costAdd, key, diff as u64, guard) }
+                    unsafe { metrics.as_ref().unwrap().add(costAdd, key, diff as u64, guard) }
                 }
                 self.used += cost - v;
                 self.key_costs.insert(key, cost);
@@ -446,32 +448,30 @@ mod tests {
 
     #[test]
     fn test_policy_policy_push() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+
+        let guard = collector.enter();
+
+        let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
         let mut keep_count = 0;
         for i in 0..10 {
             if p.push(vec![1, 2, 3, 4, 5], &guard) {
                 keep_count += 1;
             }
         }
-        assert_ne!(keep_count, 0)
+        assert_ne!(keep_count, 0);
+        drop(Box::into_raw(shard_metric))
     }
 
     #[test]
     fn test_policy_policy_add() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
+        let shard_metric = Box::into_raw(Box::new(Metrics::new(doNotUse, &collector)));
         let mut p = DefaultPolicy::<i32>::new(1000, 100, shard_metric);
         let v = p.add(1, 101, &guard);
         assert!(v.0.len() == 0 || v.1, "can't add an item bigger than entire cache");
@@ -501,14 +501,13 @@ mod tests {
 
     #[test]
     fn test_policy_del() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(1000, 100, shard_metric);
+        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut p = DefaultPolicy::<i32>::new(1000, 100, &*shard_metric);
 
         p.add(1, 1, &guard);
         p.del(&1,&guard);
@@ -516,73 +515,70 @@ mod tests {
 
         assert_eq!(p.has(1,&guard),false);
         assert_eq!(p.has(2,&guard),false);
+        drop(Box::into_raw(shard_metric))
     }
     #[test]
     fn test_policy_cap() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
 
         p.add(1, 1, &guard);
 
         assert_eq!(p.cap(),9);
-
+        drop(Box::into_raw(shard_metric))
     }
 
 
     #[test]
     fn test_policy_update() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
 
         p.add(1, 1, &guard);
         p.add(1, 2, &guard);
 
         assert_eq!(p.evict.key_costs.get(&1),Some(&2));
-
+        drop(Box::into_raw(shard_metric))
     }
 
     #[test]
     fn test_policy_cost() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
 
         p.add(1, 1, &guard);
 
 
         assert_eq!(p.cost(&1,&guard),1);
         assert_eq!(p.cost(&2,&guard),-1);
-
+        drop(Box::into_raw(shard_metric))
     }
 
 
     #[test]
     fn test_policy_clear() {
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
 
         let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
-        let mut p = DefaultPolicy::<i32>::new(100, 10, shard_metric);
+        let shard_metric= Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
 
         p.add(1, 1, &guard);
         p.add(2, 2, &guard);
@@ -594,74 +590,75 @@ mod tests {
         assert_eq!(p.has(2,&guard),false);
         assert_eq!(p.has(2,&guard),false);
 
-
+        drop(Box::into_raw(shard_metric))
     }
     #[test]
     fn test_lfu_add(){
 
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
-        let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
 
-        let mut lfu = SampledLFU::new(4,shard_metric);
+        let guard = collector.enter();
+        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+
+
+
+        let mut lfu = SampledLFU::new(4,&*shard_metric);
         lfu.add(1, 1);
         lfu.add(2, 2);
         lfu.add(3, 1);
         assert_eq!(lfu.used,4);
         assert_eq!(lfu.key_costs.get(&2),Some(&2));
+        drop(Box::into_raw(shard_metric))
     }
 
     #[test]
     fn test_lfu_del(){
 
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
-        let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
 
-        let mut lfu = SampledLFU::new(4,shard_metric);
+        let guard = collector.enter();
+        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+
+
+
+        let mut lfu = SampledLFU::new(4,&*shard_metric);
         lfu.add(1, 1);
         lfu.add(2, 2);
         lfu.del(&2);
         assert_eq!(lfu.used,1);
         assert_eq!(lfu.key_costs.get(&2),None);
+        drop(Box::into_raw(shard_metric))
     }
 
 
     #[test]
     fn test_lfu_update(){
 
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
-        let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
 
-        let mut lfu = SampledLFU::new(4,shard_metric);
+        let guard = collector.enter();
+        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut lfu = SampledLFU::new(4,&*shard_metric);
         lfu.add(1, 1);
 
         assert_eq!( lfu.update_if_has(1,2,&guard),true);
         assert_eq!(lfu.used,2);
         assert_eq!( lfu.update_if_has(2,2,&guard),false);
+        drop(Box::into_raw(shard_metric))
     }
 
     #[test]
     fn test_lfu_clear(){
 
-        let metrics: Atomic<Metrics> = Atomic::null();
         let collector = Collector::new();
-        let table = Shared::boxed(Metrics::new(doNotUse, &collector), &collector);
-        metrics.store(table, Ordering::SeqCst);
-        let guard = collector.enter();
-        let shard_metric = metrics.load(Ordering::SeqCst, &guard);
 
-        let mut lfu = SampledLFU::new(4,shard_metric);
+        let guard = collector.enter();
+        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+
+
+        let mut lfu = SampledLFU::new(4,&*shard_metric);
         lfu.add(1, 1);
         lfu.add(2, 2);
         lfu.add(3, 3);
@@ -669,6 +666,7 @@ mod tests {
 
         assert_eq!(lfu.used,0);
         assert_eq!(lfu.key_costs.len(),0);
+        drop(Box::into_raw(shard_metric))
 
     }
 }

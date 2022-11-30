@@ -1,7 +1,8 @@
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crossbeam::epoch::{Atomic, Shared};
 
 use memory_cache_rust::bloom::haskey::key_to_hash;
@@ -31,49 +32,29 @@ fn test_cache_key_to_hash_thread() {
 
 
     let cache = Arc::new(Cache::new());
-    let c1 = Arc::clone(&cache);
-    let c2 = Arc::clone(&cache);
-    let c3 = Arc::clone(&cache);
 
-    let t1 = thread::spawn(move || {
-        let guard = c1.guard();
-        for i in 0..ITER {
-            c1.set(i, i + 7, 1, &guard);
-        }
-    });
+    let handles: Vec<_> = (0..10).map(|_| {
+        let map1 = cache.clone();
+        thread::spawn(move || {
+            let guard = map1.guard();
+            for i in 0..ITER {
+                map1.set(i, i + 7, 0, &guard);
+            }
+        })
+    }).collect();
 
-    let t2 = thread::spawn(move || {
-        let guard = c2.guard();
-        for i in 0..ITER {
-            c2.set(i, i + 7, 1, &guard);
-        }
-    });
 
-    let t3 = thread::spawn(move || {
-        let guard = c3.guard();
-        for i in 0..ITER {
-            c3.set(i, i + 7, 1, &guard);
-        }
-    });
-    let c41 = Arc::clone(&cache);
-    let t4 = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(1000));
-        let guard = c41.guard();
-        for i in 0..ITER {
-            println!("{:?}", c41.get(&i, &guard))
-        }
-    });
+    for h in handles {
+        h.join().unwrap()
+    }
 
-    t1.join();
-    t2.join();
-    t3.join();
-    t4.join();
+
     let c4 = Arc::clone(&cache);
     let guard = c4.guard();
-    c4.set(1, 2, 1, &guard);
-    c4.set(2, 2, 1, &guard);
-    println!("{:?}", c4.get(&1, &guard));
-    println!("{:?}", c4.get(&2, &guard));
+    for i in 0..ITER {
+       assert_eq!( c4.get(&i, &guard),Some(&i));
+    }
+
 }
 
 
@@ -143,6 +124,28 @@ fn test_cache_with_ttl() {
     thread::sleep(std::time::Duration::from_secs(5));
     drop(g);
     for i in 0..ITER {
-        assert_eq!(cache.get(&i,&guard),None)
+        assert_eq!(cache.get(&i, &guard), None)
+    }
+}
+
+#[test]
+fn test_cache_with_ttl_without_timmer() {
+    let cache = Arc::new(Cache::new());
+    let c1 = Arc::clone(&cache);
+
+
+    let t1 = thread::spawn(move || {
+        let guard = c1.guard();
+        for i in 0..ITER {
+            let now = Instant::now().add(Duration::from_secs(200));
+            c1.set_with_ttl(i, i+7, 0, now.elapsed(), &guard);
+        }
+    });
+    t1.join().unwrap();
+    thread::sleep(Duration::from_millis(2000));
+    let guard = cache.guard();
+    for i in 0..ITER {
+        assert_eq!(cache.get(&i, &guard), Some(&(i+7)));
+        // println!("{:?}",cache.get(&i, &guard));
     }
 }

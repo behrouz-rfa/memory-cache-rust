@@ -132,22 +132,32 @@ impl<V> Store<V> {
     }
 
     pub fn get<'g>(&'g self, key_hash: u64, confilict_hash: u64, guard: &'g Guard<'_>) -> Option<&'g V> {
+        let lock = self.lock.lock();
         let index = self.bini(key_hash);
 
-
         return match self.data[index].get(&key_hash) {
-            None => None,
+            None => {
+                drop(lock);
+                None
+            },
             Some(v) => {
                 if confilict_hash != 0 && confilict_hash != v.conflict {
+                    drop(lock);
                     return None;
                 }
                 let now = Instant::now();
                 if v.expiration.is_some() && v.expiration.unwrap().as_millis() > now.elapsed().as_millis() {
+                    drop(lock);
                     None
                 } else {
-                    let v = v.value.load(Ordering::SeqCst, guard);
-                    assert!(!v.is_null());
-                    return Some((unsafe { v.as_ref().unwrap().deref() }));
+                    let item = v.value.load(Ordering::SeqCst, guard);
+                    if let Some(v) = unsafe { item.as_ref() } {
+                        let v = &**v;
+                        drop(lock);
+                        return Some(v);
+                    }
+                    drop(lock);
+                    return None;
                 }
             }
         };
@@ -162,8 +172,9 @@ impl<V> Store<V> {
         match self.data[index].get(&item.key) {
             None => {
                 if item.expiration.is_some() {
-                    self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
+                   self.em.add(item.key, item.conflict, item.expiration.unwrap(), guard);
                 }
+
                 self.data[index].insert(item.key, item);
                 drop(lock);
                 return;
@@ -182,11 +193,10 @@ impl<V> Store<V> {
                 return;
             }
         }
-        drop(lock);
-        return;
+
     }
 
-    pub(crate) fn update<'g>(&'g mut self, item: Item<V>, guard: &'g Guard<'_>) -> bool {
+    pub(crate) fn update<'g>(&'g mut self, item: &Item<V>, guard: &'g Guard<'_>) -> bool {
         let index = self.bini(item.key);
 
 
@@ -205,7 +215,7 @@ impl<V> Store<V> {
                 self.data[index].insert(item.key, Node {
                     key: item.key,
                     conflict: item.conflict,
-                    value: item.value,
+                    value: item.value.clone(),
                     expiration: item.expiration,
 
                 });
@@ -362,7 +372,7 @@ mod tests {
                 cost: 0,
                 expiration: None,
             };
-            s.update(item, &guard);
+            s.update(&item, &guard);
             let v = s.get(key, conflict, &guard);
             assert_eq!(v, Some(&(i + 4)))
         }
@@ -394,7 +404,7 @@ mod tests {
             cost: 0,
             expiration: None,
         };
-        assert_eq!(s.update(item, &guard), false);
+        assert_eq!(s.update(&item, &guard), false);
 
         s.del(&1, &1, &guard);
         let v = s.get(1, 0, &guard);
