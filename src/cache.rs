@@ -46,7 +46,7 @@ pub struct Config<K, V> {
     // NumCounters determines the number of counters (keys) to keep that hold
     // access frequency information. It's generally a good idea to have more
     // counters than the max cache capacity, as this will improve eviction
-    // accuracy and subsequent hit ratios.
+    // accuracy and subsequent HIT ratios.
     //
     // For example, if you expect your cache to hold 1,000,000 items when full,
     // NumCounters should be 10,000,000 (10x). Each counter takes up 4 bits, so
@@ -242,7 +242,7 @@ impl<K, V, S> Cache<K, V, S>
         };
 
         if c.metrics {
-            ca.metrics = Some(Box::new(Metrics::new(doNotUse, &ca.collector)));
+            ca.metrics = Some(Box::new(Metrics::new(DO_NOT_USE, &ca.collector)));
         }
 
 
@@ -309,7 +309,7 @@ impl<K, V, S> Cache<K, V, S>
                         let n = if sc > 0 {
                             sc as usize
                         } else {
-                            doNotUse
+                            DO_NOT_USE
                         };
                         table = Shared::boxed(Metrics::new(n, &self.collector), &self.collector);
                         self.metrics.store(table, Ordering::SeqCst);
@@ -350,7 +350,7 @@ impl<K, V, S> Cache<K, V, S>
                     let n = if sc > 0 {
                         sc as usize
                     } else {
-                        doNotUse
+                        DO_NOT_USE
                     };
                     let p = self.policy.load(Ordering::SeqCst, guard);
 
@@ -420,7 +420,7 @@ impl<K, V, S> Cache<K, V, S>
             }
 
             //try to allocate the table
-            // let metrics = Box::into_raw(Box::new(Metrics::new(doNotUse, &self.collector)));
+            // let metrics = Box::into_raw(Box::new(Metrics::new(DO_NOT_USE, &self.collector)));
             if let Some(m) = &self.metrics {
                 let v: *const Metrics = &**m;
 
@@ -534,13 +534,13 @@ impl<V, K, S> Cache<K, V, S>
         return match result {
             None => {
                 if let Some(metrics) = &self.metrics {
-                    metrics.add(hit, key_hash, 1, guard);
+                    metrics.add(HIT, key_hash, 1, guard);
                 }
                 None
             }
             Some(ref _v) => {
                 if let Some(metrics) = &self.metrics {
-                    metrics.add(miss, key_hash, 1, guard);
+                    metrics.add(MISS, key_hash, 1, guard);
                 }
                 result
             }
@@ -657,7 +657,7 @@ impl<V, K, S> Cache<K, V, S>
                     if added {
                         dstore.set(node, guard);
                         if let Some(metrics) = &self.metrics {
-                            metrics.add(keyAdd, item.key, 1, guard)
+                            metrics.add(KEY_ADD, item.key, 1, guard)
                         }
                     }
 
@@ -676,8 +676,8 @@ impl<V, K, S> Cache<K, V, S>
                                 }
                                 // if !self.metrics.is_null() {
                                 //     unsafe {
-                                //         self.metrics.as_mut().unwrap().add(keyEvict, victims[i].key, 1);
-                                //         self.metrics.as_mut().unwrap().add(costEvict, victims[i].key, victims[i].cost as u64);
+                                //         self.metrics.as_mut().unwrap().add(KEY_EVICT, victims[i].key, 1);
+                                //         self.metrics.as_mut().unwrap().add(COST_EVICT, victims[i].key, victims[i].cost as u64);
                                 //     };
                                 // }
                             }
@@ -821,8 +821,8 @@ impl<V, K, S> Cache<K, V, S>
                                 }
                                 // if !self.metrics.is_null() {
                                 //     unsafe {
-                                //         self.metrics.as_mut().unwrap().add(keyEvict, victims[i].key, 1);
-                                //         self.metrics.as_mut().unwrap().add(costEvict, victims[i].key, victims[i].cost as u64);
+                                //         self.metrics.as_mut().unwrap().add(KEY_EVICT, victims[i].key, 1);
+                                //         self.metrics.as_mut().unwrap().add(COST_EVICT, victims[i].key, victims[i].cost as u64);
                                 //     };
                                 // }
                             }
@@ -874,25 +874,25 @@ impl<V, K, S> Cache<K, V, S>
 
 type MetricType = usize;
 
-pub const hit: MetricType = 0;
-pub const miss: MetricType = 1;
+pub const HIT: MetricType = 0;
+pub const MISS: MetricType = 1;
 // The following 3 keep track of number of keys added, updated and evicted.
-const keyAdd: MetricType = 2;
-pub const keyUpdate: MetricType = 3;
-pub const keyEvict: MetricType = 4;
+const KEY_ADD: MetricType = 2;
+pub const KEY_UPDATE: MetricType = 3;
+pub const KEY_EVICT: MetricType = 4;
 // The following 2 keep track of cost of keys added and evicted.
-pub const costAdd: MetricType = 5;
-pub const costEvict: MetricType = 6;
+pub const COST_ADD: MetricType = 5;
+pub const COST_EVICT: MetricType = 6;
 // The following keep track of how many sets were dropped or rejected later.
 
-pub const dropSets: MetricType = 7;
-pub const rejectSets: MetricType = 8;
+pub const DROP_SETS: MetricType = 7;
+pub const REJECT_SETS: MetricType = 8;
 // The following 2 keep track of how many gets were kept and dropped on the
 // floor.
-pub const dropGets: MetricType = 9;
-pub const keepGets: MetricType = 10;
+pub const DROP_GETS: MetricType = 9;
+pub const KEEP_GETS: MetricType = 10;
 // This should be the final enum. Other enums should be set before this.
-pub const doNotUse: MetricType = 11;
+pub const DO_NOT_USE: MetricType = 11;
 
 pub struct Metrics {
     pub(crate) all: Box<[Atomic<[u64; 256]>]>,
@@ -929,7 +929,7 @@ impl Metrics {
         total
     }
     pub(crate) fn SetsDropped<'g>(&'g self, guard: &'g Guard) -> u64 {
-        self.get(dropSets, guard)
+        self.get(DROP_SETS, guard)
     }
     pub(crate) fn add<'g>(&self, t: MetricType, hash: u64, delta: u64, guard: &'g Guard) {
         let idx = (hash % 5) * 10;
@@ -945,7 +945,7 @@ impl Metrics {
     }
 
     pub fn clear<'g>(&self, guard: &'g Guard) {
-        let _data = vec![Atomic::from(Shared::boxed([0u64; 256], guard.collector().unwrap())); doNotUse];
+        let _data = vec![Atomic::from(Shared::boxed([0u64; 256], guard.collector().unwrap())); DO_NOT_USE];
         // self.all.as_mut() = &mut *data.into_boxed_slice();
     }
 }

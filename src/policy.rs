@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use seize::Guard;
 
 use crate::bloom::bbloom::Bloom;
-use crate::cache::{costAdd, Item, keepGets, keyUpdate, Metrics, rejectSets};
+use crate::cache::{COST_ADD, Item, KEEP_GETS, KEY_UPDATE, Metrics, REJECT_SETS};
 use crate::cache::ItemFlag::ItemNew;
 use crate::cmsketch::CmSketch;
 use crate::reclaim::Atomic;
@@ -77,14 +77,14 @@ impl<T> DefaultPolicy<T> {
             let metrics = self.metrics;
             if !metrics.is_null() {
                 unsafe {
-                    metrics.as_ref().unwrap().add(keepGets, keys[0], keys.len() as u64, guard)
+                    metrics.as_ref().unwrap().add(KEEP_GETS, keys[0], keys.len() as u64, guard)
                 };
             }
        /* } else {
             let metrics = self.metrics;
             if metrics.is_null() {
                 unsafe {
-                    metrics.as_ref().unwrap().add(dropGets, keys[0], keys.len() as u64, guard)
+                    metrics.as_ref().unwrap().add(DROP_GETS, keys[0], keys.len() as u64, guard)
                 };
             }
         }*/
@@ -92,14 +92,14 @@ impl<T> DefaultPolicy<T> {
         /*select! {
             send(self.item_ch.0,keys.clone())->res =>{
                 if !self.metrics.is_null() {
-                    unsafe{self.metrics.as_mut().unwrap().add(keepGets,keys[0],keys.len() as u64)};
+                    unsafe{self.metrics.as_mut().unwrap().add(KEEP_GETS,keys[0],keys.len() as u64)};
                     return true;
                 }
 
             },
             default=>{
               if !self.metrics.is_null() {
-                    unsafe {self.metrics.as_mut().unwrap().add(keepGets,keys[0],keys.len() as u64)};
+                    unsafe {self.metrics.as_mut().unwrap().add(KEEP_GETS,keys[0],keys.len() as u64)};
                     return false;
                 }
 
@@ -108,7 +108,7 @@ impl<T> DefaultPolicy<T> {
         return true;
         // unsafe {
         //     if !self.metrics.is_null() {
-        //         self.metrics.as_mut().unwrap().add(keepGets, keys[0], keys.len() as u64)
+        //         self.metrics.as_mut().unwrap().add(KEEP_GETS, keys[0], keys.len() as u64)
         //     }
         // };
         // true
@@ -192,7 +192,7 @@ impl<T> DefaultPolicy<T> {
                     let metrics = self.metrics;
                     if metrics.is_null() {
                         unsafe {
-                            metrics.as_ref().unwrap().add(rejectSets, key, 1, guard)
+                            metrics.as_ref().unwrap().add(REJECT_SETS, key, 1, guard)
                         };
                     }
                 }
@@ -405,19 +405,19 @@ impl SampledLFU {
                 let metrics = self.metrics;
                 unsafe {
                     if !metrics.is_null() {
-                        metrics.as_ref().unwrap().add(keyUpdate, key, 1, guard)
+                        metrics.as_ref().unwrap().add(KEY_UPDATE, key, 1, guard)
                     }
                 }
 
                 if *v > cost {
                     let diff = *v - cost;
                     if !metrics.is_null() {
-                        unsafe { metrics.as_ref().unwrap().add(costAdd, key, (diff - 1) as u64, guard) }
+                        unsafe { metrics.as_ref().unwrap().add(COST_ADD, key, (diff - 1) as u64, guard) }
                     }
                 } else if cost > *v {
                     let diff = *v - cost;
                     if !metrics.is_null() {
-                        unsafe { metrics.as_ref().unwrap().add(costAdd, key, diff as u64, guard) }
+                        unsafe { metrics.as_ref().unwrap().add(COST_ADD, key, diff as u64, guard) }
                     }
                 }
                 self.used += cost - v;
@@ -444,7 +444,7 @@ struct PolicyPair {
 mod tests {
     use seize::Collector;
 
-    use crate::cache::{doNotUse, Metrics};
+    use crate::cache::{DO_NOT_USE, Metrics};
     use crate::policy::{DefaultPolicy, SampledLFU};
 
     #[test]
@@ -452,7 +452,7 @@ mod tests {
         let collector = Collector::new();
 
         let _guard = collector.enter();
-        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric = Box::new(Metrics::new(DO_NOT_USE, &collector));
 
         let guard = collector.enter();
 
@@ -472,7 +472,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric = Box::into_raw(Box::new(Metrics::new(doNotUse, &collector)));
+        let shard_metric = Box::into_raw(Box::new(Metrics::new(DO_NOT_USE, &collector)));
         let mut p = DefaultPolicy::<i32>::new(1000, 100, shard_metric);
         let v = p.add(1, 101, &guard);
         assert!(v.0.len() == 0 || v.1, "can't add an item bigger than entire cache");
@@ -505,7 +505,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric = Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut p = DefaultPolicy::<i32>::new(1000, 100, &*shard_metric);
@@ -523,7 +523,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric =Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
@@ -540,7 +540,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric = Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
@@ -557,7 +557,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric = Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
@@ -576,7 +576,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric= Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric= Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut p = DefaultPolicy::<i32>::new(100, 10, &*shard_metric);
@@ -599,7 +599,7 @@ mod tests {
         let collector = Collector::new();
 
         let _guard = collector.enter();
-        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric =Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
 
@@ -618,7 +618,7 @@ mod tests {
         let collector = Collector::new();
 
         let _guard = collector.enter();
-        let shard_metric = Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric = Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
 
@@ -638,7 +638,7 @@ mod tests {
         let collector = Collector::new();
 
         let guard = collector.enter();
-        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric =Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut lfu = SampledLFU::new(4,&*shard_metric);
@@ -656,7 +656,7 @@ mod tests {
         let collector = Collector::new();
 
         let _guard = collector.enter();
-        let shard_metric =Box::new(Metrics::new(doNotUse, &collector));
+        let shard_metric =Box::new(Metrics::new(DO_NOT_USE, &collector));
 
 
         let mut lfu = SampledLFU::new(4,&*shard_metric);

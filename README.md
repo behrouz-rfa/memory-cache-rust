@@ -15,7 +15,7 @@ cache in [Dgraph][].
 * **Fast Throughput** - we use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many treads as you want with little throughput degradation.
-* **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
+* **Metrics** - optional performance metrics for throughput, HIT ratios, and other stats.
 * **Simple API** - just figure out your ideal `Config` values and you're off and running.
 
 ## Status
